@@ -38,17 +38,21 @@ class Tools:
     ytdlp: Path
     ffmpeg: Path
     encoder: str
+    deno: Path | None = None
 
 
 def cache_key(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()[:24]
 
 
-def build_download_args(ytdlp: Path, ffmpeg: Path, url: str, dst_stem: Path) -> list[str]:
+def build_download_args(ytdlp: Path, ffmpeg: Path, url: str, dst_stem: Path, deno: Path | None = None) -> list[str]:
+    # YouTube extraction needs a JS runtime; the bundled deno is not on PATH, so name it explicitly
+    js_runtime = ["--js-runtimes", f"deno:{deno}"] if deno else []
     return [
         str(ytdlp),
         "--no-playlist",
         "--no-progress",
+        *js_runtime,
         "-f", f"bv*[height<={MAX_HEIGHT}]+ba/b[height<={MAX_HEIGHT}]/b",
         "--merge-output-format", "mp4",
         "--remux-video", "mp4",
@@ -111,7 +115,7 @@ class Runner:
         path = stem.with_suffix(".mp4")
         if not path.is_file():
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self._exec(build_download_args(self.tools.ytdlp, self.tools.ffmpeg, url, stem),
+            self._exec(build_download_args(self.tools.ytdlp, self.tools.ffmpeg, url, stem, self.tools.deno),
                        DOWNLOAD_TIMEOUT_S, "Download do vídeo")
             if not path.is_file():
                 raise RunnerError("Download do vídeo terminou sem ficheiro mp4")

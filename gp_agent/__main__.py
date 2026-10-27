@@ -71,6 +71,9 @@ def main() -> int:
     if ytdlp is None or ffmpeg is None:
         log.error("yt-dlp ou ffmpeg não encontrados (definir GP_YT_DLP / GP_FFMPEG)")
         return 1
+    deno = find_tool("deno", env, _bundle_dir())
+    if deno is None:
+        log.warning("deno não encontrado (GP_DENO) — downloads do YouTube podem falhar")
 
     settings = Settings(
         export_dir=export_dir(platform, home, env, windows_documents(platform)),
@@ -85,7 +88,7 @@ def main() -> int:
     backend = None if env.get("GP_AGENT_NO_TRAY") == "1" else load_backend()
     tray = Tray(backend, settings.export_dir, on_quit=lambda: _stop(server_box)) if backend else None
 
-    runner = Runner(Tools(ytdlp=ytdlp, ffmpeg=ffmpeg, encoder=pick_encoder(platform)), cache_dir(platform, home, env))
+    runner = Runner(Tools(ytdlp=ytdlp, ffmpeg=ffmpeg, encoder=pick_encoder(platform), deno=deno), cache_dir(platform, home, env))
     app = create_app(
         settings,
         queue=JobQueue(partial(export, runner=runner, export_dir=settings.export_dir)),

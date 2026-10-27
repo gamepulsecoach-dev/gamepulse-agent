@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def binary_names(platform: str) -> list[str]:
     suffix = ".exe" if platform == "win32" else ""
-    return [f"yt-dlp{suffix}", f"ffmpeg{suffix}"]
+    # deno: JS runtime yt-dlp needs for YouTube
+    return [f"yt-dlp{suffix}", f"ffmpeg{suffix}", f"deno{suffix}"]
 
 
 def pyinstaller_args(entry: Path, binaries: list[Path], dist: Path, work: Path, platform: str) -> list[str]:

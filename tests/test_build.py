@@ -7,10 +7,10 @@ from build_tools.build import APP_NAME, binary_names, pyinstaller_args
 
 class TestBinaryNames:
     def test_windows_exe(self):
-        assert binary_names("win32") == ["yt-dlp.exe", "ffmpeg.exe"]
+        assert binary_names("win32") == ["yt-dlp.exe", "ffmpeg.exe", "deno.exe"]
 
     def test_macos_plain(self):
-        assert binary_names("darwin") == ["yt-dlp", "ffmpeg"]
+        assert binary_names("darwin") == ["yt-dlp", "ffmpeg", "deno"]
 
 
 class TestPyinstallerArgs:

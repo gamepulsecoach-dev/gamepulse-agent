@@ -36,6 +36,15 @@ class TestBuildDownloadArgs:
         args = build_download_args(Path("yt"), Path("ff"), YT, tmp_path / "k")
         assert args[-2] == "--"
 
+    def test_deno_passed_as_js_runtime(self, tmp_path):
+        # YouTube needs a JS runtime; the bundled deno is not on PATH
+        args = build_download_args(Path("yt"), Path("ff"), YT, tmp_path / "k", deno=Path("d/deno.exe"))
+        assert args[args.index("--js-runtimes") + 1] == "deno:" + str(Path("d/deno.exe"))
+        assert args.index("--js-runtimes") < args.index("--")
+
+    def test_without_deno_no_js_runtime_flag(self, tmp_path):
+        assert "--js-runtimes" not in build_download_args(Path("yt"), Path("ff"), YT, tmp_path / "k")
+
 
 class TestEnsureVideo:
     def test_downloads_when_missing(self, make_runner):

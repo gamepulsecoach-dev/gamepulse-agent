@@ -80,6 +80,11 @@ class TestFindTool:
         exe.write_bytes(b"")
         assert find_tool("yt-dlp", {"GP_YT_DLP": str(exe)}, bundle_dir=None, which=lambda _: None) == exe
 
+    def test_deno_env_var_name(self, tmp_path):
+        exe = tmp_path / "d.exe"
+        exe.write_bytes(b"")
+        assert find_tool("deno", {"GP_DENO": str(exe)}, bundle_dir=None, which=lambda _: None) == exe
+
     def test_bundle_dir_before_path(self, tmp_path):
         exe = tmp_path / "yt-dlp.exe"
         exe.write_bytes(b"")

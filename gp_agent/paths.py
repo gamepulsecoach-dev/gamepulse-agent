@@ -6,7 +6,7 @@ from pathlib import Path
 
 APP_DIR = "GamePulse"
 
-_TOOL_ENV = {"ffmpeg": "GP_FFMPEG", "yt-dlp": "GP_YT_DLP"}
+_TOOL_ENV = {"ffmpeg": "GP_FFMPEG", "yt-dlp": "GP_YT_DLP", "deno": "GP_DENO"}
 
 
 def _check_platform(platform: str) -> None:
