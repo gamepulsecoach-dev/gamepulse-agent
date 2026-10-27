@@ -58,6 +58,8 @@ jobs:
             version = $version
             windows = @{ url = "https://github.com/${{ github.repository }}/releases/download/$tag/GamePulseAgent-Setup-$version.exe"; sha256 = $sha }
           } | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 dist/latest.json
-          gh release create $tag $setup dist/latest.json --title "GamePulse Agent $version" --generate-notes
+          # Stable-name copy: the web app links to releases/latest/download/GamePulseAgent-Setup.exe
+          Copy-Item $setup dist/GamePulseAgent-Setup.exe
+          gh release create $tag $setup dist/GamePulseAgent-Setup.exe dist/latest.json --title "GamePulse Agent $version" --generate-notes
 
   # TODO(F5 macOS): needs an LGPL ffmpeg with h264_videotoolbox (no ready-made build like BtbN) + .app zip
