@@ -5,7 +5,6 @@ import os
 import socket
 import sys
 import threading
-from functools import partial
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -92,7 +91,7 @@ def main() -> int:
     runner = Runner(Tools(ytdlp=ytdlp, ffmpeg=ffmpeg, encoder=pick_encoder(platform), deno=deno), cache_dir(platform, home, env))
     app = create_app(
         settings,
-        queue=JobQueue(partial(export, runner=runner, export_dir=settings.export_dir)),
+        queue=JobQueue(lambda req, ctx: export(req, runner, settings.export_dir, ctx)),
         pairing=Pairing(),
         tokens=TokenStore(conf_dir / "token"),
         show_code=tray.show_code if tray else _console_code,

@@ -5,7 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 from test_overlay import make_png
 
-from gp_agent.exporter import CompileRequest
+from gp_agent.edit_cmd import OverlaySegment, Pause
+from gp_agent.exporter import CompileRequest, EditRequest
 from gp_agent.ffmpeg_cmd import Probe
 from gp_agent.files import FileTickets
 from gp_agent.jobs import JobQueue
@@ -23,15 +24,27 @@ class InlineExecutor:
         fn(*args)
 
 
+class DeferredExecutor:
+    def __init__(self):
+        self.pending = []
+
+    def submit(self, fn, *args):
+        self.pending.append((fn, args))
+
+    def run_all(self):
+        for fn, args in self.pending:
+            fn(*args)
+
+
 class Harness:
-    def __init__(self, tmp_path, allow_dev=False):
+    def __init__(self, tmp_path, allow_dev=False, executor=None):
         self.requests = []
         self.export_dir = tmp_path / "GamePulse"
         self.tokens = TokenStore(tmp_path / "token")
         self.pairing = Pairing()
         self.codes = []
 
-        def work(req):
+        def work(req, ctx):
             self.requests.append(req)
             return self.export_dir / "Jogo" / "Golo" / "clip.mp4"
 
@@ -42,7 +55,7 @@ class Harness:
                 raise self.probe_result
             return self.probe_result
 
-        self.queue = JobQueue(work, executor=InlineExecutor())
+        self.queue = JobQueue(work, executor=executor or InlineExecutor())
         app = create_app(
             Settings(allow_dev=allow_dev, export_dir=self.export_dir),
             queue=self.queue,
@@ -395,6 +408,104 @@ class TestServeFile:
         write_clip(h)
         url = ticket_url(h, h.pair())
         assert h.client.get(url).status_code == 403
+
+
+def edit_body(**over):
+    png = base64.b64encode(make_png(64, 36)).decode()
+    base = dict(
+        path=CLIP_REL,
+        pauses=[{"atMs": 2000, "durMs": 1500}],
+        segments=[{"image": 0, "durMs": 2000}, {"image": 1, "durMs": 9500}],
+        images=[png, png],
+    )
+    return {**base, **over}
+
+
+class TestEdit:
+    def test_requires_token(self, h):
+        write_clip(h)
+        h.pair()
+        assert h.client.post("/edit", json=edit_body(), headers={"Origin": ORIGIN}).status_code == 401
+
+    def test_accepts_and_builds_request(self, h):
+        write_clip(h)
+        token = h.pair()
+        resp = h.client.post("/edit", json=edit_body(), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 202
+        req = h.requests[-1]
+        assert isinstance(req, EditRequest)
+        assert req.src == (h.export_dir / "Jogo" / "Golo" / "clip.mp4").resolve()
+        assert req.pauses == (Pause(2000, 1500),)
+        assert req.segments == (OverlaySegment(0, 2000), OverlaySegment(1, 9500))
+        assert req.images[0] == make_png(64, 36)
+
+    def test_path_outside_export_dir(self, h):
+        token = h.pair()
+        resp = h.client.post("/edit", json=edit_body(path="../x.mp4"), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 400
+
+    def test_missing_clip(self, h):
+        token = h.pair()
+        resp = h.client.post("/edit", json=edit_body(), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 404
+
+    def test_segment_pointing_to_missing_image(self, h):
+        write_clip(h)
+        token = h.pair()
+        body = edit_body(segments=[{"image": 5, "durMs": 1000}])
+        resp = h.client.post("/edit", json=body, headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 400
+        assert h.requests == []
+
+    def test_bad_image(self, h):
+        write_clip(h)
+        token = h.pair()
+        resp = h.client.post("/edit", json=edit_body(images=["bm9wZQ=="]), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("over", [
+        {"pauses": [{"atMs": 1000, "durMs": 100}]},
+        {"pauses": [{"atMs": 1000, "durMs": 60_000}]},
+        {"segments": []},
+        {"segments": [{"image": 0, "durMs": 0}]},
+        {"images": []},
+    ])
+    def test_invalid_fields(self, h, over):
+        write_clip(h)
+        token = h.pair()
+        resp = h.client.post("/edit", json=edit_body(**over), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 422
+
+
+class TestJobProgressAndCancel:
+    def test_progress_is_reported(self, h):
+        token = h.pair()
+        job_id = h.client.post("/clip", json=clip_body(), headers={"Origin": ORIGIN, "X-GP-Token": token}).json()["jobId"]
+        body = h.client.get(f"/jobs/{job_id}", headers={"Origin": ORIGIN, "X-GP-Token": token}).json()
+        assert body["status"] == "done"
+        assert body["progress"] is None
+
+    def test_cancel_queued_job(self, tmp_path):
+        ex = DeferredExecutor()
+        h = Harness(tmp_path, executor=ex)
+        token = h.pair()
+        headers = {"Origin": ORIGIN, "X-GP-Token": token}
+        job_id = h.client.post("/clip", json=clip_body(), headers=headers).json()["jobId"]
+        assert h.client.post(f"/jobs/{job_id}/cancel", headers=headers).status_code == 200
+        ex.run_all()
+        assert h.client.get(f"/jobs/{job_id}", headers=headers).json()["status"] == "cancelled"
+        assert h.requests == []
+
+    def test_cancel_finished_job(self, h):
+        token = h.pair()
+        headers = {"Origin": ORIGIN, "X-GP-Token": token}
+        job_id = h.client.post("/clip", json=clip_body(), headers=headers).json()["jobId"]
+        assert h.client.post(f"/jobs/{job_id}/cancel", headers=headers).status_code == 409
+
+    def test_cancel_unknown_and_needs_token(self, h):
+        token = h.pair()
+        assert h.client.post("/jobs/nope/cancel", headers={"Origin": ORIGIN, "X-GP-Token": token}).status_code == 404
+        assert h.client.post("/jobs/nope/cancel", headers={"Origin": ORIGIN}).status_code == 401
 
 
 def test_unknown_route_404(h):

@@ -13,9 +13,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from gp_agent import __version__
-from gp_agent.exporter import ClipRequest, CompileRequest, Overlay
+from gp_agent.edit_cmd import OverlaySegment, Pause
+from gp_agent.exporter import ClipRequest, CompileRequest, EditRequest, Overlay
 from gp_agent.ffmpeg_cmd import Probe
-from gp_agent.files import FileTickets
+from gp_agent.files import FileTickets, resolve_export_file
 from gp_agent.jobs import JobQueue
 from gp_agent.overlay import png_size
 from gp_agent.pairing import CODE_TTL_S, Pairing, PairingLocked, TokenStore
@@ -32,6 +33,12 @@ MAX_OVERLAYS = 5
 MAX_CLIPS = 100
 MAX_PNG_B64 = 12_000_000
 MAX_BODY_BYTES = 64 * 1024 * 1024
+# Telestrator edit (same limits as the site's edit-timeline.js / edit-export.js)
+PAUSE_MIN_MS = 500
+PAUSE_MAX_MS = 10_000
+MAX_PAUSES = 50
+MAX_EDIT_IMAGES = 600
+MAX_SEGMENTS = 20_000
 
 # Paths a browser may open without an Origin header (e.g. typing the url)
 _NO_ORIGIN_OK = frozenset({"/health"})
@@ -75,6 +82,23 @@ class CompileIn(_CamelModel):
     clips: list[ClipPartIn] = Field(min_length=1, max_length=MAX_CLIPS)
 
 
+class PauseIn(_CamelModel):
+    at_ms: int = Field(alias="atMs", ge=0, le=MAX_TIMESTAMP_MS)
+    dur_ms: int = Field(alias="durMs", ge=PAUSE_MIN_MS, le=PAUSE_MAX_MS)
+
+
+class SegmentIn(_CamelModel):
+    image: int = Field(ge=0, lt=MAX_EDIT_IMAGES)
+    dur_ms: int = Field(alias="durMs", ge=1, le=MAX_TIMESTAMP_MS)
+
+
+class EditIn(_CamelModel):
+    path: str = Field(min_length=1, max_length=MAX_TEXT * 3)
+    pauses: list[PauseIn] = Field(default_factory=list, max_length=MAX_PAUSES)
+    segments: list[SegmentIn] = Field(min_length=1, max_length=MAX_SEGMENTS)
+    images: list[str] = Field(min_length=1, max_length=MAX_EDIT_IMAGES)
+
+
 class PairIn(BaseModel):
     code: str = Field(max_length=16)
 
@@ -88,12 +112,31 @@ class BadInput(ValueError):
 
 
 def _decode_overlay(ov: OverlayIn) -> Overlay:
+    return Overlay(timestamp_ms=ov.timestamp_ms, png=_decode_png(ov.png))
+
+
+def _decode_png(b64: str) -> bytes:
     try:
-        data = base64.b64decode(ov.png, validate=True)
+        data = base64.b64decode(b64, validate=True)
         png_size(data)
     except (binascii.Error, ValueError):
         raise BadInput("Imagem do desenho inválida") from None
-    return Overlay(timestamp_ms=ov.timestamp_ms, png=data)
+    return data
+
+
+def _to_edit(body: EditIn, export_dir: Path) -> EditRequest:
+    if any(seg.image >= len(body.images) for seg in body.segments):
+        raise BadInput("Segmento do desenho sem imagem")
+    try:
+        src = resolve_export_file(export_dir, body.path)
+    except ValueError:
+        raise BadInput("Caminho do clip inválido") from None
+    return EditRequest(
+        src=src,
+        pauses=tuple(Pause(p.at_ms, p.dur_ms) for p in body.pauses),
+        segments=tuple(OverlaySegment(s.image, s.dur_ms) for s in body.segments),
+        images=tuple(_decode_png(img) for img in body.images),
+    )
 
 
 def _to_request(part: ClipPartIn, game: str, category: str, index: int) -> ClipRequest:
@@ -222,7 +265,25 @@ def create_app(
             "status": job.status.value,
             "file": _relative_file(job.file, settings.export_dir),
             "error": job.error,
+            "progress": job.progress,
         }
+
+    @app.post("/jobs/{job_id}/cancel", dependencies=[Depends(require_token)])
+    def job_cancel(job_id: str) -> JSONResponse:
+        if queue.get(job_id) is None:
+            return _error(404, "Pedido não encontrado")
+        if not queue.cancel(job_id):
+            return _error(409, "O pedido já terminou")
+        return JSONResponse({"ok": True})
+
+    @app.post("/edit", status_code=202, dependencies=[Depends(require_token)])
+    def edit(body: EditIn) -> JSONResponse:
+        try:
+            req = _to_edit(body, settings.export_dir)
+        except FileNotFoundError:
+            return _error(404, "Clip não encontrado neste PC")
+        job = queue.submit(req)
+        return JSONResponse({"jobId": job.id}, status_code=202)
 
     @app.post("/files/ticket", dependencies=[Depends(require_token)])
     def file_ticket(body: FileTicketIn) -> JSONResponse:

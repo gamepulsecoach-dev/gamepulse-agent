@@ -4,12 +4,15 @@ import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from gp_agent.cache import CacheEntry, plan_eviction
+from gp_agent.edit_cmd import Pause, build_edit_args, output_duration_ms, parse_progress_ms
 from gp_agent.ffmpeg_cmd import (
     MAX_HEIGHT,
     Freeze,
@@ -31,6 +34,17 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win3
 
 class RunnerError(Exception):
     """A tool failed; the message is safe to show to the user."""
+
+
+class Cancelled(Exception):
+    """The user cancelled the job while a tool was running."""
+
+
+class Progress(Protocol):
+    @property
+    def cancelled(self) -> bool: ...
+
+    def report(self, fraction: float) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -64,6 +78,7 @@ def build_download_args(ytdlp: Path, ffmpeg: Path, url: str, dst_stem: Path, den
 
 
 Run = Callable[..., subprocess.CompletedProcess]
+Popen = Callable[..., subprocess.Popen]
 
 
 def _part_path(dst: Path) -> Path:
@@ -77,11 +92,13 @@ class Runner:
         cache_dir: Path,
         run: Run = subprocess.run,
         clock: Callable[[], float] = time.time,
+        popen: Popen = subprocess.Popen,
     ):
         self.tools = tools
         self.cache_dir = cache_dir
         self._run = run
         self._clock = clock
+        self._popen = popen
 
     def _call(self, args: list[str], timeout: int, what: str) -> subprocess.CompletedProcess:
         try:
@@ -100,11 +117,44 @@ class Runner:
             tail = (result.stderr or "").strip()[-STDERR_TAIL:]
             raise RunnerError(f"{what} falhou: {tail}" if tail else f"{what} falhou")
 
-    def _write_atomically(self, dst: Path, args_for: Callable[[Path], list[str]], timeout: int, what: str) -> None:
+    def _exec_progress(self, args: list[str], timeout: int, what: str, total_ms: int, ctx: Progress) -> None:
+        """Runs ffmpeg with `-progress pipe:1`, reporting it and stopping on cancel."""
+        deadline = time.monotonic() + timeout
+        with tempfile.TemporaryFile() as err:
+            try:
+                proc = self._popen(args, stdout=subprocess.PIPE, stderr=err, text=True, creationflags=_NO_WINDOW)
+            except OSError as exc:
+                raise RunnerError(f"{what}: não foi possível executar ({exc.__class__.__name__})") from None
+            try:
+                for line in proc.stdout:
+                    if ctx.cancelled:
+                        raise Cancelled()
+                    if time.monotonic() > deadline:
+                        raise RunnerError(f"{what}: excedeu o tempo limite")
+                    done_ms = parse_progress_ms(line)
+                    if done_ms is not None and total_ms > 0:
+                        ctx.report(done_ms / total_ms)
+                returncode = proc.wait()
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+            if returncode != 0:
+                err.seek(0)
+                tail = err.read().decode("utf-8", "replace").strip()[-STDERR_TAIL:]
+                raise RunnerError(f"{what} falhou: {tail}" if tail else f"{what} falhou")
+
+    def _write_atomically(
+        self, dst: Path, args_for: Callable[[Path], list[str]], timeout: int, what: str,
+        execute: Callable[[list[str]], None] | None = None,
+    ) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = _part_path(dst)
         try:
-            self._exec(args_for(tmp), timeout, what)
+            if execute is None:
+                self._exec(args_for(tmp), timeout, what)
+            else:
+                execute(args_for(tmp))
             os.replace(tmp, dst)
         finally:
             tmp.unlink(missing_ok=True)
@@ -139,6 +189,18 @@ class Runner:
             dst,
             lambda tmp: build_clip_args(self.tools.ffmpeg, src, tmp, start_ms, end_ms, self.tools.encoder, probe, frozen),
             CUT_TIMEOUT_S, "Corte do clip",
+        )
+
+    def edit(
+        self, src: Path, dst: Path, overlay_list: Path, probe: Probe, pauses: Sequence[Pause], ctx: Progress
+    ) -> None:
+        """Clip + held pauses + drawing frames -> dst, with progress and cancel."""
+        total_ms = output_duration_ms(probe.duration_ms or 0, pauses)
+        self._write_atomically(
+            dst,
+            lambda tmp: build_edit_args(self.tools.ffmpeg, src, overlay_list, tmp, self.tools.encoder, probe, pauses),
+            CUT_TIMEOUT_S, "Exportação do clip editado",
+            execute=lambda args: self._exec_progress(args, CUT_TIMEOUT_S, "Exportação do clip editado", total_ms, ctx),
         )
 
     def concat(self, parts: Sequence[Path], dst: Path) -> None:

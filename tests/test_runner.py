@@ -6,7 +6,8 @@ import pytest
 from conftest import FakeRun
 
 from gp_agent.ffmpeg_cmd import Freeze, Probe
-from gp_agent.runner import RunnerError, build_download_args, cache_key
+from gp_agent.edit_cmd import Pause
+from gp_agent.runner import Cancelled, Runner, RunnerError, build_download_args, cache_key
 
 YT = "https://www.youtube.com/watch?v=abc123"
 HD = Probe(1920, 1080, True, 60_000)
@@ -148,3 +149,94 @@ class TestEvict:
 
     def test_missing_cache_dir_is_noop(self, make_runner):
         assert make_runner(FakeRun()).evict() == ()
+
+
+class FakeProc:
+    """Stands in for an ffmpeg Popen that writes `-progress` lines on stdout."""
+
+    def __init__(self, args, lines, returncode, stderr, stderr_file, write_output):
+        self.args = args
+        self.stdout = iter(lines)
+        self.returncode = None
+        self._rc = returncode
+        self.killed = False
+        stderr_file.write(stderr.encode())
+        if write_output and returncode == 0:
+            Path(args[-1]).write_bytes(b"edited")
+
+    def wait(self, timeout=None):
+        self.returncode = -9 if self.killed else self._rc
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+
+
+class FakePopen:
+    def __init__(self, lines=("out_time_us=1000000", "out_time_us=2000000", "progress=end"),
+                 returncode=0, stderr="", write_output=True):
+        self.lines, self.returncode, self.stderr, self.write_output = lines, returncode, stderr, write_output
+        self.procs: list[FakeProc] = []
+
+    def __call__(self, args, **kwargs):
+        proc = FakeProc(args, [f"{line}\n" for line in self.lines], self.returncode, self.stderr,
+                        kwargs["stderr"], self.write_output)
+        self.procs.append(proc)
+        return proc
+
+
+class FakeCtx:
+    def __init__(self, cancel_after=None):
+        self.reports: list[float] = []
+        self._cancel_after = cancel_after
+
+    @property
+    def cancelled(self):
+        return self._cancel_after is not None and len(self.reports) >= self._cancel_after
+
+    def report(self, fraction):
+        self.reports.append(fraction)
+
+
+class TestEdit:
+    CLIP = Probe(1920, 1080, True, 3_000, fps=25.0)
+
+    def runner(self, tmp_path, tools, popen):
+        return Runner(tools, cache_dir=tmp_path / "cache", run=FakeRun(), popen=popen)
+
+    def test_writes_atomically_and_reports_progress(self, tmp_path, tools):
+        popen = FakePopen()
+        dst = tmp_path / "out" / "clip_editado_v1.mp4"
+        ctx = FakeCtx()
+        self.runner(tmp_path, tools, popen).edit(
+            tmp_path / "clip.mp4", dst, tmp_path / "list.txt", self.CLIP, (Pause(1_000, 1_000),), ctx)
+        assert dst.read_bytes() == b"edited"
+        assert not list(dst.parent.glob("*.part*"))
+        assert ctx.reports == [0.25, 0.5]  # output = 3 s clip + 1 s pause
+        assert popen.procs[0].args[popen.procs[0].args.index("-progress") + 1] == "pipe:1"
+
+    def test_cancel_kills_ffmpeg_and_leaves_nothing(self, tmp_path, tools):
+        popen = FakePopen(write_output=False)
+        dst = tmp_path / "out" / "clip_editado_v1.mp4"
+        with pytest.raises(Cancelled):
+            self.runner(tmp_path, tools, popen).edit(
+                tmp_path / "clip.mp4", dst, tmp_path / "list.txt", self.CLIP, (), FakeCtx(cancel_after=1))
+        assert popen.procs[0].killed
+        assert not dst.exists()
+
+    def test_failure_reports_stderr_tail(self, tmp_path, tools):
+        popen = FakePopen(returncode=1, stderr="Invalid data found")
+        with pytest.raises(RunnerError, match="Invalid data found"):
+            self.runner(tmp_path, tools, popen).edit(
+                tmp_path / "clip.mp4", tmp_path / "o.mp4", tmp_path / "l.txt", self.CLIP, (), FakeCtx())
+
+    def test_missing_binary(self, tmp_path, tools):
+        def boom(args, **kwargs):
+            raise FileNotFoundError(args[0])
+
+        with pytest.raises(RunnerError, match="não foi possível executar"):
+            self.runner(tmp_path, tools, boom).edit(
+                tmp_path / "clip.mp4", tmp_path / "o.mp4", tmp_path / "l.txt", self.CLIP, (), FakeCtx())

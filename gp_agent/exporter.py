@@ -1,13 +1,14 @@
-"""What one job produces: a single clip, or several clips joined into one MP4."""
+"""What one job produces: a single clip, several clips joined into one MP4, or an edited clip."""
 
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from gp_agent.edit_cmd import OverlaySegment, Pause, edited_path, overlay_list_text
 from gp_agent.ffmpeg_cmd import Freeze, Probe, clip_window
 from gp_agent.naming import clip_path, compilation_path
 from gp_agent.overlay import png_size, video_rect_in_canvas
-from gp_agent.runner import Runner
+from gp_agent.runner import Progress, Runner
 from gp_agent.sources import classify_source
 
 
@@ -34,6 +35,21 @@ class CompileRequest:
     game: str
     title: str
     clips: tuple[ClipRequest, ...]
+
+
+@dataclass(frozen=True)
+class EditRequest:
+    src: Path  # clip inside the export folder, already resolved
+    pauses: tuple[Pause, ...]
+    segments: tuple[OverlaySegment, ...]  # drawing images on the output clock, in order
+    images: tuple[bytes, ...]  # PNGs of the video area, all the same size
+
+
+class _NoProgress:
+    cancelled = False
+
+    def report(self, fraction: float) -> None:
+        pass
 
 
 def _validate(clip: ClipRequest) -> None:
@@ -92,7 +108,30 @@ def export_compilation(req: CompileRequest, runner: Runner, export_dir: Path) ->
     return dst
 
 
-def export(req: ClipRequest | CompileRequest, runner: Runner, export_dir: Path) -> Path:
+def export_edit(req: EditRequest, runner: Runner, ctx: Progress) -> Path:
+    """<clip>_editado_vN.mp4 next to the clip; the original is never touched."""
+    if len({png_size(img) for img in req.images}) != 1:
+        raise ValueError("Imagens do desenho com tamanhos diferentes")
+    probe = runner.probe(req.src)
+    dst = edited_path(req.src)
+    with tempfile.TemporaryDirectory(prefix="gp_edit_") as tmp:
+        workdir = Path(tmp)
+        pngs = []
+        for i, img in enumerate(req.images):
+            png = workdir / f"overlay_{i:03d}.png"
+            png.write_bytes(img)
+            pngs.append(png)
+        listing = workdir / "overlay.txt"
+        listing.write_text(overlay_list_text(req.segments, pngs), encoding="utf-8")
+        runner.edit(req.src, dst, listing, probe, req.pauses, ctx)
+    return dst
+
+
+def export(
+    req: ClipRequest | CompileRequest | EditRequest, runner: Runner, export_dir: Path, ctx: Progress | None = None
+) -> Path:
+    if isinstance(req, EditRequest):
+        return export_edit(req, runner, ctx or _NoProgress())
     if isinstance(req, CompileRequest):
         return export_compilation(req, runner, export_dir)
     return export_clip(req, runner, export_dir)

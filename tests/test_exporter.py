@@ -3,8 +3,19 @@ from pathlib import Path
 import pytest
 from conftest import FakeRun, inputs
 from test_overlay import make_png
+from test_runner import FakeCtx, FakePopen
 
-from gp_agent.exporter import ClipRequest, CompileRequest, Overlay, export, export_clip, export_compilation
+from gp_agent.edit_cmd import OverlaySegment, Pause
+from gp_agent.exporter import (
+    ClipRequest,
+    CompileRequest,
+    EditRequest,
+    Overlay,
+    export,
+    export_clip,
+    export_compilation,
+)
+from gp_agent.runner import Runner
 
 YT = "https://www.youtube.com/watch?v=abc123"
 
@@ -106,3 +117,49 @@ def test_export_dispatches_by_type(make_runner, tmp_path):
     run = FakeRun()
     assert export(req(timestamp_ms=30_000), make_runner(run), tmp_path).name.endswith("_01_00m30s.mp4")
     assert "Compilado" in export(CompileRequest("J", "T", (req(timestamp_ms=30_000),)), make_runner(run), tmp_path).name
+
+
+class TestExportEdit:
+    def make(self, tmp_path, tools, popen):
+        return Runner(tools, cache_dir=tmp_path / "cache", run=FakeRun(), popen=popen)
+
+    def edit_req(self, src, images=None, segments=None, pauses=()):
+        return EditRequest(
+            src=src, pauses=pauses,
+            segments=segments or (OverlaySegment(0, 1_000), OverlaySegment(1, 2_000)),
+            images=images or (make_png(64, 36), make_png(64, 36)),
+        )
+
+    def test_writes_next_version_with_images_and_list(self, tmp_path, tools):
+        popen = FakePopen()
+        src = tmp_path / "Jogo" / "Golo" / "Jogo_Golo_01_00m30s.mp4"
+        src.parent.mkdir(parents=True)
+        src.write_bytes(b"clip")
+        seen = {}
+
+        def spy(args, **kwargs):
+            listing = Path(args[args.index("concat") + 4])
+            seen["list"] = listing.read_text(encoding="utf-8")
+            seen["pngs"] = sorted(p.name for p in listing.parent.glob("*.png"))
+            return popen(args, **kwargs)
+
+        out = export(self.edit_req(src, pauses=(Pause(500, 1_000),)), self.make(tmp_path, tools, spy), tmp_path, FakeCtx())
+        assert out == src.with_name("Jogo_Golo_01_00m30s_editado_v1.mp4")
+        assert out.read_bytes() == b"edited"
+        assert seen["pngs"] == ["overlay_000.png", "overlay_001.png"]
+        assert "duration 2.000" in seen["list"]
+
+    def test_images_must_share_one_size(self, tmp_path, tools):
+        src = tmp_path / "c.mp4"
+        src.write_bytes(b"clip")
+        bad = self.edit_req(src, images=(make_png(64, 36), make_png(32, 18)))
+        with pytest.raises(ValueError):
+            export(bad, self.make(tmp_path, tools, FakePopen()), tmp_path, FakeCtx())
+
+    def test_invalid_png_is_refused_before_ffmpeg(self, tmp_path, tools):
+        popen = FakePopen()
+        src = tmp_path / "c.mp4"
+        src.write_bytes(b"clip")
+        with pytest.raises(ValueError):
+            export(self.edit_req(src, images=(b"nope", b"nope")), self.make(tmp_path, tools, popen), tmp_path, FakeCtx())
+        assert popen.procs == []

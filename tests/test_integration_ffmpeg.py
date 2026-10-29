@@ -57,3 +57,56 @@ def test_freeze_clip_mute_clip_and_compilation(runner, media, tmp_path):
     got = runner.probe(joined)
     assert (got.width, got.height, got.has_audio) == (1920, 1080, True)
     assert got.duration_ms == pytest.approx(got_frozen.duration_ms + got_silent.duration_ms, abs=150)
+
+
+class _Ctx:
+    cancelled = False
+
+    def __init__(self):
+        self.reports: list[float] = []
+
+    def report(self, fraction: float) -> None:
+        self.reports.append(fraction)
+
+
+def _pixel(video: Path, at_s: float) -> tuple[int, int, int]:
+    """RGB of the top-left pixel at `at_s` in the video."""
+    out = subprocess.run(
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", f"{at_s:.3f}", "-i", str(video),
+         "-vf", "crop=8:8:0:0,scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    return out[0], out[1], out[2]
+
+
+def test_edit_holds_pauses_and_lays_drawing_frames(runner, media, tmp_path):
+    from gp_agent.edit_cmd import OverlaySegment, Pause
+    from gp_agent.exporter import EditRequest, export
+
+    clip = tmp_path / "Jogo" / "clip.mp4"
+    clip.parent.mkdir()
+    runner.cut(media / "sound.mp4", clip, 0, 4_000, runner.probe(media / "sound.mp4"))
+    d = tmp_path / "png"
+    d.mkdir()
+    ffmpeg("-f", "lavfi", "-i", "color=c=black@0.0:s=640x360,format=rgba", "-frames:v", "1", str(d / "clear.png"))
+    ffmpeg("-f", "lavfi", "-i", "color=c=0x00ff00:s=640x360,format=rgba", "-frames:v", "1", str(d / "green.png"))
+    clear, green = (d / "clear.png").read_bytes(), (d / "green.png").read_bytes()
+
+    ctx = _Ctx()
+    req = EditRequest(
+        src=clip, pauses=(Pause(1_000, 2_000),),
+        # output clock: clear 0-2 s, green 2-4 s (inside/after the pause), clear to the end
+        segments=(OverlaySegment(0, 2_000), OverlaySegment(1, 2_000), OverlaySegment(0, 2_000)),
+        images=(clear, green),
+    )
+    out = export(req, runner, tmp_path, ctx)
+
+    assert out.name == "clip_editado_v1.mp4"
+    got = runner.probe(out)
+    assert (got.width, got.height, got.has_audio) == (1920, 1080, True)
+    assert got.duration_ms == pytest.approx(6_000, abs=150)
+    assert ctx.reports and ctx.reports[-1] == pytest.approx(1.0, abs=0.05)
+    r, g, b = _pixel(out, 3.0)
+    assert g > 200 and r < 60 and b < 60  # drawing over the frozen frame
+    assert _pixel(out, 5.0)[1] < 200 or _pixel(out, 5.0)[0] > 60  # drawing gone afterwards
+    assert clip.read_bytes()  # original untouched
