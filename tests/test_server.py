@@ -6,8 +6,11 @@ from fastapi.testclient import TestClient
 from test_overlay import make_png
 
 from gp_agent.exporter import CompileRequest
+from gp_agent.ffmpeg_cmd import Probe
+from gp_agent.files import FileTickets
 from gp_agent.jobs import JobQueue
 from gp_agent.pairing import MAX_ATTEMPTS, Pairing, TokenStore
+from gp_agent.runner import RunnerError
 from gp_agent.server import MAX_BODY_BYTES, Settings, create_app
 
 ORIGIN = "https://gamepulsecoach.com"
@@ -32,6 +35,13 @@ class Harness:
             self.requests.append(req)
             return self.export_dir / "Jogo" / "Golo" / "clip.mp4"
 
+        self.probe_result: Probe | Exception = Probe(1920, 1080, True, 10_000, fps=25.0)
+
+        def probe(_path):
+            if isinstance(self.probe_result, Exception):
+                raise self.probe_result
+            return self.probe_result
+
         self.queue = JobQueue(work, executor=InlineExecutor())
         app = create_app(
             Settings(allow_dev=allow_dev, export_dir=self.export_dir),
@@ -39,6 +49,8 @@ class Harness:
             pairing=self.pairing,
             tokens=self.tokens,
             show_code=self.codes.append,
+            tickets=FileTickets(self.export_dir),
+            probe=probe,
         )
         self.client = TestClient(app, base_url="http://localhost:7777")
 
@@ -298,6 +310,91 @@ class TestJobs:
         token = h.pair()
         resp = h.client.get("/jobs/abc", headers={"Origin": ORIGIN, "X-GP-Token": token})
         assert resp.status_code == 404
+
+
+CLIP_BYTES = bytes(range(100))
+CLIP_REL = "Jogo/Golo/clip.mp4"
+
+
+def write_clip(h):
+    path = h.export_dir / "Jogo" / "Golo" / "clip.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(CLIP_BYTES)
+
+
+def ticket_url(h, token):
+    resp = h.client.post("/files/ticket", json={"path": CLIP_REL}, headers={"Origin": ORIGIN, "X-GP-Token": token})
+    assert resp.status_code == 200
+    return resp.json()["url"]
+
+
+class TestFileTicket:
+    def test_requires_token(self, h):
+        write_clip(h)
+        h.pair()
+        resp = h.client.post("/files/ticket", json={"path": CLIP_REL}, headers={"Origin": ORIGIN})
+        assert resp.status_code == 401
+
+    def test_returns_url_and_video_info(self, h):
+        write_clip(h)
+        token = h.pair()
+        resp = h.client.post("/files/ticket", json={"path": CLIP_REL}, headers={"Origin": ORIGIN, "X-GP-Token": token})
+        body = resp.json()
+        assert body["url"].startswith("/files/")
+        assert (body["width"], body["height"], body["fps"], body["durationMs"]) == (1920, 1080, 25.0, 10_000)
+
+    def test_unknown_fps_is_null(self, h):
+        write_clip(h)
+        h.probe_result = Probe(1280, 720, False, 5_000)
+        token = h.pair()
+        resp = h.client.post("/files/ticket", json={"path": CLIP_REL}, headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.json()["fps"] is None
+
+    def test_path_outside_export_dir(self, h):
+        token = h.pair()
+        resp = h.client.post("/files/ticket", json={"path": "../x.mp4"}, headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 400
+
+    def test_missing_clip(self, h):
+        token = h.pair()
+        resp = h.client.post("/files/ticket", json={"path": CLIP_REL}, headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 404
+        assert "neste PC" in resp.json()["error"]
+
+    def test_unreadable_clip(self, h):
+        write_clip(h)
+        h.probe_result = RunnerError("Leitura do vídeo falhou")
+        token = h.pair()
+        resp = h.client.post("/files/ticket", json={"path": CLIP_REL}, headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert resp.status_code == 422
+
+
+class TestServeFile:
+    def test_full_file(self, h):
+        write_clip(h)
+        url = ticket_url(h, h.pair())
+        resp = h.client.get(url, headers={"Origin": ORIGIN})
+        assert resp.status_code == 200
+        assert resp.content == CLIP_BYTES
+        assert resp.headers["content-type"] == "video/mp4"
+        assert resp.headers["accept-ranges"] == "bytes"
+        assert resp.headers["access-control-allow-origin"] == ORIGIN
+
+    def test_range_request(self, h):
+        write_clip(h)
+        url = ticket_url(h, h.pair())
+        resp = h.client.get(url, headers={"Origin": ORIGIN, "Range": "bytes=10-19"})
+        assert resp.status_code == 206
+        assert resp.content == CLIP_BYTES[10:20]
+        assert resp.headers["content-range"] == "bytes 10-19/100"
+
+    def test_unknown_ticket(self, h):
+        assert h.client.get("/files/nope", headers={"Origin": ORIGIN}).status_code == 404
+
+    def test_requires_origin(self, h):
+        write_clip(h)
+        url = ticket_url(h, h.pair())
+        assert h.client.get(url).status_code == 403
 
 
 def test_unknown_route_404(h):

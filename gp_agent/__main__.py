@@ -12,6 +12,7 @@ from pathlib import Path
 import uvicorn
 
 from gp_agent.ffmpeg_cmd import pick_encoder
+from gp_agent.files import FileTickets
 from gp_agent.jobs import JobQueue
 from gp_agent.pairing import Pairing, TokenStore
 from gp_agent.paths import cache_dir, config_dir, export_dir, find_tool, windows_documents
@@ -95,6 +96,8 @@ def main() -> int:
         pairing=Pairing(),
         tokens=TokenStore(conf_dir / "token"),
         show_code=tray.show_code if tray else _console_code,
+        tickets=FileTickets(settings.export_dir),
+        probe=runner.probe,
     )
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=settings.port, log_level="warning", log_config=None))
     server_box.append(server)

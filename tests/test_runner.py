@@ -87,7 +87,7 @@ class TestEnsureVideo:
 
 class TestProbe:
     def test_parses_ffmpeg_output_even_with_nonzero_exit(self, make_runner, tmp_path):
-        assert make_runner(FakeRun()).probe(tmp_path / "v.mp4") == HD
+        assert make_runner(FakeRun()).probe(tmp_path / "v.mp4") == Probe(1920, 1080, True, 60_000, fps=25.0)
 
     def test_unreadable_video(self, make_runner, tmp_path):
         with pytest.raises(RunnerError, match="ler o vídeo"):

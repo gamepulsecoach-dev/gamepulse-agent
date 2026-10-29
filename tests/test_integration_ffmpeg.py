@@ -39,6 +39,7 @@ def test_freeze_clip_mute_clip_and_compilation(runner, media, tmp_path):
     sound, mute = runner.probe(media / "sound.mp4"), runner.probe(media / "mute.mp4")
     assert (sound.width, sound.height, sound.has_audio, sound.duration_ms) == (1920, 1080, True, 12_000)
     assert mute.has_audio is False
+    assert sound.fps == 25.0
 
     frozen = tmp_path / "frozen.mp4"
     freeze = Freeze(at_ms=2_000, png=media / "draw.png", crop=(0, 40, 1280, 720))

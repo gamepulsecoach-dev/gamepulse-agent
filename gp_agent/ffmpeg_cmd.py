@@ -16,7 +16,8 @@ AUDIO_RATE = 48_000
 _ENCODERS = {"win32": "h264_mf", "darwin": "h264_videotoolbox"}
 
 _DURATION = re.compile(r"Duration: (\d+):(\d{2}):(\d{2})\.(\d+)")
-_VIDEO = re.compile(r"Stream #\S+.*?: Video: .*?\b(\d{2,5})x(\d{2,5})\b")
+_VIDEO = re.compile(r"Stream #\S+.*?: Video: .*?\b(\d{2,5})x(\d{2,5})\b.*")
+_FPS = re.compile(r"\b(\d+(?:\.\d+)?) fps\b")
 _AUDIO = re.compile(r"Stream #\S+.*?: Audio:")
 _SILENCE = f"anullsrc=r={AUDIO_RATE}:cl=stereo"
 
@@ -27,6 +28,7 @@ class Probe:
     height: int
     has_audio: bool
     duration_ms: int | None
+    fps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,11 @@ def parse_probe(stderr: str) -> Probe:
     if duration:
         h, m, s, frac = duration.groups()
         duration_ms = ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(frac.ljust(3, "0")[:3])
-    return Probe(int(video.group(1)), int(video.group(2)), bool(_AUDIO.search(stderr)), duration_ms)
+    fps = _FPS.search(video.group(0))
+    return Probe(
+        int(video.group(1)), int(video.group(2)), bool(_AUDIO.search(stderr)), duration_ms,
+        fps=float(fps.group(1)) if fps else None,
+    )
 
 
 def output_size(probe: Probe) -> tuple[int, int]:

@@ -69,7 +69,17 @@ At least one output file must be specified
 
 class TestParseProbe:
     def test_reads_video_audio_and_duration(self):
-        assert parse_probe(FFMPEG_STDERR) == Probe(1920, 1080, True, 65_500)
+        assert parse_probe(FFMPEG_STDERR) == Probe(1920, 1080, True, 65_500, fps=25.0)
+
+    def test_fractional_fps(self):
+        assert parse_probe(FFMPEG_STDERR.replace("25 fps", "29.97 fps")).fps == 29.97
+
+    def test_fps_missing(self):
+        assert parse_probe(FFMPEG_STDERR.replace(", 25 fps", "")).fps is None
+
+    def test_audio_line_does_not_supply_fps(self):
+        text = FFMPEG_STDERR.replace(", 25 fps", "").replace("128 kb/s", "128 kb/s, 30 fps")
+        assert parse_probe(text).fps is None
 
     def test_no_audio(self):
         text = "\n".join(line for line in FFMPEG_STDERR.splitlines() if "Audio" not in line)

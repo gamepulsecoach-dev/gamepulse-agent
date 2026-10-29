@@ -9,14 +9,17 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from gp_agent import __version__
 from gp_agent.exporter import ClipRequest, CompileRequest, Overlay
+from gp_agent.ffmpeg_cmd import Probe
+from gp_agent.files import FileTickets
 from gp_agent.jobs import JobQueue
 from gp_agent.overlay import png_size
 from gp_agent.pairing import CODE_TTL_S, Pairing, PairingLocked, TokenStore
+from gp_agent.runner import RunnerError
 from gp_agent.security import is_allowed_origin, token_matches
 from gp_agent.sources import classify_source
 
@@ -74,6 +77,10 @@ class CompileIn(_CamelModel):
 
 class PairIn(BaseModel):
     code: str = Field(max_length=16)
+
+
+class FileTicketIn(BaseModel):
+    path: str = Field(min_length=1, max_length=MAX_TEXT * 3)
 
 
 class BadInput(ValueError):
@@ -135,6 +142,8 @@ def create_app(
     pairing: Pairing,
     tokens: TokenStore,
     show_code: Callable[[str], None],
+    tickets: FileTickets,
+    probe: Callable[[Path], Probe],
 ) -> FastAPI:
     app = FastAPI(title="GamePulse Agent", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     allowed_hosts = {f"localhost:{settings.port}", f"127.0.0.1:{settings.port}"}
@@ -214,5 +223,31 @@ def create_app(
             "file": _relative_file(job.file, settings.export_dir),
             "error": job.error,
         }
+
+    @app.post("/files/ticket", dependencies=[Depends(require_token)])
+    def file_ticket(body: FileTicketIn) -> JSONResponse:
+        try:
+            ticket = tickets.issue(body.path)
+        except FileNotFoundError:
+            return _error(404, "Clip não encontrado neste PC")
+        except ValueError:
+            return _error(400, "Caminho do clip inválido")
+        try:
+            info = probe(tickets.resolve(ticket))
+        except (RunnerError, ValueError):
+            return _error(422, "Não foi possível ler o clip")
+        return JSONResponse({
+            "url": f"/files/{ticket}",
+            "width": info.width, "height": info.height,
+            "fps": info.fps, "durationMs": info.duration_ms,
+        })
+
+    @app.get("/files/{ticket}")
+    def serve_file(ticket: str) -> Response:
+        path = tickets.resolve(ticket)
+        if path is None or not path.is_file():
+            return _error(404, "Ligação expirada ou clip removido")
+        # FileResponse answers Range requests (206), which <video> needs to seek
+        return FileResponse(path, media_type="video/mp4")
 
     return app
