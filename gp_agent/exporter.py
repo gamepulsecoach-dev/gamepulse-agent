@@ -28,6 +28,7 @@ class ClipRequest:
     category: str
     index: int
     overlays: tuple[Overlay, ...] = ()
+    team: str = ""
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class CompileRequest:
     game: str
     title: str
     clips: tuple[ClipRequest, ...]
+    team: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,7 +83,7 @@ def _render(req: ClipRequest, src: Path, runner: Runner, dst: Path, workdir: Pat
 
 def export_clip(req: ClipRequest, runner: Runner, export_dir: Path) -> Path:
     _validate(req)
-    dst = clip_path(export_dir, req.game, req.category, req.index, req.timestamp_ms)
+    dst = clip_path(export_dir, req.game, req.category, req.index, req.timestamp_ms, req.team)
     src = runner.ensure_video(req.video_url)
     runner.evict(in_use=frozenset({src}))
     with tempfile.TemporaryDirectory(prefix="gp_clip_") as tmp:
@@ -94,7 +96,7 @@ def export_compilation(req: CompileRequest, runner: Runner, export_dir: Path) ->
         raise ValueError("compilation without clips")
     for clip in req.clips:
         _validate(clip)
-    dst = compilation_path(export_dir, req.game, req.title)
+    dst = compilation_path(export_dir, req.game, req.title, req.team)
     sources = {url: runner.ensure_video(url) for url in dict.fromkeys(c.video_url for c in req.clips)}
     runner.evict(in_use=frozenset(sources.values()))
     with tempfile.TemporaryDirectory(prefix="gp_compile_") as tmp:

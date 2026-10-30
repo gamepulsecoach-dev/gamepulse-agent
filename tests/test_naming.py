@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from gp_agent.naming import clip_filename, clip_path, format_timestamp, sanitize_segment
+from gp_agent.naming import clip_filename, clip_path, compilation_path, format_timestamp, sanitize_segment
 
 
 class TestSanitizeSegment:
@@ -70,3 +70,22 @@ class TestClipPath:
     def test_hostile_names_stay_inside_base(self, tmp_path: Path):
         path = clip_path(tmp_path, "../../Windows", "..\\System32", 1, 0)
         assert path.resolve().is_relative_to(tmp_path.resolve())
+
+
+class TestTeamFolder:
+    def test_clip_goes_under_team_then_game(self, tmp_path: Path):
+        path = clip_path(tmp_path, "vs Contacto (24-10)", "Canto", 2, 1_168_000, team="Lusa-Ad Braga")
+        assert path == (
+            tmp_path / "Lusa-Ad Braga" / "vs Contacto (24-10)" / "Canto" / "vs-Contacto-(24-10)_Canto_02_19m28s.mp4"
+        )
+
+    def test_hostile_team_stays_inside_base(self, tmp_path: Path):
+        path = clip_path(tmp_path, "J", "C", 1, 0, team="../../..")
+        assert path.resolve().is_relative_to(tmp_path.resolve())
+
+    def test_compilation_without_team_keeps_game_folder(self, tmp_path: Path):
+        assert compilation_path(tmp_path, "Jogo", "Golos") == tmp_path / "Jogo" / "Jogo_Compilado_Golos.mp4"
+
+    def test_compilation_goes_under_team_then_game(self, tmp_path: Path):
+        path = compilation_path(tmp_path, "vs Contacto", "Golos", team="Lusa")
+        assert path == tmp_path / "Lusa" / "vs Contacto" / "vs-Contacto_Compilado_Golos.mp4"

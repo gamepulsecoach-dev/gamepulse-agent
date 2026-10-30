@@ -567,3 +567,20 @@ class TestJobProgressAndCancel:
 
 def test_unknown_route_404(h):
     assert h.client.get("/nope", headers={"Origin": ORIGIN}).status_code == 404
+
+
+class TestTeamField:
+    def test_clip_without_team_defaults_to_empty(self, h):
+        token = h.pair()
+        h.client.post("/clip", json=clip_body(), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert h.requests[0].team == ""
+
+    def test_clip_team_reaches_the_request(self, h):
+        token = h.pair()
+        h.client.post("/clip", json=clip_body(team="Lusa"), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert h.requests[0].team == "Lusa"
+
+    def test_compile_team_reaches_the_request(self, h):
+        token = h.pair()
+        h.client.post("/compile", json=compile_body(team="Lusa"), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert h.requests[0].team == "Lusa"

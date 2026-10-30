@@ -1,6 +1,6 @@
 """Folder and file names for exported clips.
 
-Layout: <base>/<Jogo>/<Categoria>/<Jogo>_<Categoria>_NN_MMmSSs.mp4
+Layout: <base>/[<Equipa>/]<Jogo>/<Categoria>/<Jogo>_<Categoria>_NN_MMmSSs.mp4
 """
 
 import re
@@ -54,13 +54,19 @@ def _inside(base_dir: Path, path: Path) -> Path:
     return path
 
 
-def clip_path(base_dir: Path, game: str, category: str, index: int, timestamp_ms: int) -> Path:
-    return _inside(base_dir, base_dir / sanitize_segment(game) / sanitize_segment(category) / clip_filename(
+def _game_dir(base_dir: Path, game: str, team: str) -> Path:
+    # Older sites send no team: the game folder stays at the top level
+    root = base_dir / sanitize_segment(team) if team.strip() else base_dir
+    return root / sanitize_segment(game)
+
+
+def clip_path(base_dir: Path, game: str, category: str, index: int, timestamp_ms: int, team: str = "") -> Path:
+    return _inside(base_dir, _game_dir(base_dir, game, team) / sanitize_segment(category) / clip_filename(
         game, category, index, timestamp_ms
     ))
 
 
-def compilation_path(base_dir: Path, game: str, title: str) -> Path:
-    """<base>/<Jogo>/<Jogo>_Compilado_<Titulo>.mp4"""
+def compilation_path(base_dir: Path, game: str, title: str, team: str = "") -> Path:
+    """<base>/[<Equipa>/]<Jogo>/<Jogo>_Compilado_<Titulo>.mp4"""
     name = f"{_file_part(game)}_Compilado_{_file_part(title)}.mp4"
-    return _inside(base_dir, base_dir / sanitize_segment(game) / name)
+    return _inside(base_dir, _game_dir(base_dir, game, team) / name)
