@@ -4,7 +4,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from gp_agent.edit_cmd import OverlaySegment, Pause, edited_path, overlay_list_text
+from gp_agent.edit_cmd import Loupe, OverlaySegment, Pause, ZoomCrop, edited_path, overlay_list_text
 from gp_agent.ffmpeg_cmd import Freeze, Probe, clip_window
 from gp_agent.naming import clip_path, compilation_path
 from gp_agent.overlay import png_size, video_rect_in_canvas
@@ -43,6 +43,8 @@ class EditRequest:
     pauses: tuple[Pause, ...]
     segments: tuple[OverlaySegment, ...]  # drawing images on the output clock, in order
     images: tuple[bytes, ...]  # PNGs of the video area, all the same size
+    zoom: tuple[ZoomCrop, ...] = ()  # camera crops on the output clock
+    loupes: tuple[Loupe, ...] = ()
 
 
 class _NoProgress:
@@ -123,7 +125,7 @@ def export_edit(req: EditRequest, runner: Runner, ctx: Progress) -> Path:
             pngs.append(png)
         listing = workdir / "overlay.txt"
         listing.write_text(overlay_list_text(req.segments, pngs), encoding="utf-8")
-        runner.edit(req.src, dst, listing, probe, req.pauses, ctx)
+        runner.edit(req.src, dst, listing, probe, req.pauses, ctx, zoom=req.zoom, loupes=req.loupes)
     return dst
 
 

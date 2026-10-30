@@ -4,9 +4,13 @@ import pytest
 
 from gp_agent.edit_cmd import (
     EDIT_BITRATE,
+    Loupe,
     OverlaySegment,
     Pause,
+    Rect,
+    ZoomCrop,
     build_edit_args,
+    edit_graph,
     edited_path,
     output_duration_ms,
     overlay_list_text,
@@ -101,6 +105,79 @@ class TestBuildEditArgs:
     def test_needs_duration(self):
         with pytest.raises(ValueError):
             self.args(probe=Probe(1920, 1080, True, None))
+
+    def test_graph_file_replaces_inline_graph(self):
+        args = build_edit_args(Path("ffmpeg"), Path("in.mp4"), Path("list.txt"), Path("out.mp4"), "h264_mf",
+                               SOUND, (), graph_file=Path("graph.txt"))
+        assert "-filter_complex" not in args
+        assert args[args.index("-/filter_complex") + 1] == "graph.txt"
+
+
+ZOOM_IN = (ZoomCrop(0, 0.0, 0.0, 1.0, 1.0), ZoomCrop(1_000, 0.25, 0.25, 0.5, 0.5))
+
+
+class TestZoom:
+    def test_without_zoom_or_loupes_graph_is_unchanged(self):
+        g = edit_graph(SOUND, ())
+        assert g.endswith("[bv][ol]overlay=0:0:format=auto:eof_action=repeat,format=yuv420p[ov]")
+        assert "zoompan" not in g
+
+    def test_zoom_runs_after_the_drawings_at_a_fixed_rate(self):
+        g = edit_graph(SOUND, (), zoom=ZOOM_IN)
+        assert "[bv][ol]overlay=0:0:format=auto:eof_action=repeat[od]" in g
+        assert g.endswith("[od]fps=25,zoompan=z='1/(1.000000-0.500000*clip((it-0.000)/1.000\,0\,1))'"
+                          ":x='iw*(0.000000+0.250000*clip((it-0.000)/1.000\,0\,1))'"
+                          ":y='ih*(0.000000+0.250000*clip((it-0.000)/1.000\,0\,1))'"
+                          ":d=1:s=1920x1080:fps=25,format=yuv420p[ov]")
+
+    def test_unknown_fps_falls_back_to_25(self):
+        g = edit_graph(Probe(1280, 720, False, 6_000), (), zoom=ZOOM_IN)
+        assert "fps=25,zoompan" in g and ":s=1280x720:fps=25," in g
+
+    def test_steady_stretches_add_no_terms(self):
+        crops = ZOOM_IN + (ZoomCrop(3_000, 0.25, 0.25, 0.5, 0.5), ZoomCrop(4_000, 0.0, 0.0, 1.0, 1.0))
+        g = edit_graph(SOUND, (), zoom=crops)
+        assert g.count("clip((it-1.000)") == 0  # 1 s -> 3 s holds the same crop
+        assert g.count("clip((it-3.000)/1.000") == 3
+
+    def test_single_crop_is_constant(self):
+        g = edit_graph(MUTE, (), zoom=(ZoomCrop(0, 0.1, 0.2, 0.5, 0.5),))
+        assert "zoompan=z='1/(0.500000)':x='iw*(0.100000)':y='ih*(0.200000)'" in g
+        assert "fps=30,zoompan" in g
+
+
+class TestLoupes:
+    CIRCLE = Loupe(1_000, 4_000, Rect(0.1, 0.2, 0.1, 0.1), Rect(0.5, 0.4, 0.2, 0.3), "circle")
+
+    def test_circle_is_cropped_scaled_masked_and_shown_in_its_window(self):
+        g = edit_graph(SOUND, (), loupes=(self.CIRCLE,))
+        assert "[bv]split=2[lb0][lsrc0]" in g
+        assert "[lsrc0]crop=192:108:192:216,scale=384:324,format=yuva420p[lc0]" in g
+        assert "color=c=black:s=384x324:d=0.04,format=gray,geq=lum='255*lte(hypot((X+0.5-W/2)/(W/2)\,(Y+0.5-H/2)/(H/2))\,1)'[lm0]" in g
+        assert "[lc0][lm0]alphamerge[ll0]" in g
+        assert "[lb0][ll0]overlay=960:432:enable='between(t,1.000,4.000)'[lv0]" in g
+        assert "[lv0][ol]overlay=0:0" in g
+
+    def test_rect_has_no_mask(self):
+        rect = Loupe(0, 500, Rect(0.0, 0.0, 0.25, 0.25), Rect(0.75, 0.75, 0.25, 0.25), "rect")
+        g = edit_graph(SOUND, (), loupes=(rect,))
+        assert "alphamerge" not in g
+        assert "[lsrc0]crop=480:270:0:0,scale=480:270[ll0]" in g
+
+    def test_sizes_are_even_and_inside_the_frame(self):
+        odd = Loupe(0, 500, Rect(0.9, 0.9, 0.1003, 0.1003), Rect(0.0, 0.0, 0.1003, 0.1003), "rect")
+        g = edit_graph(MUTE, (), loupes=(odd,))
+        assert "crop=128:72:1152:648,scale=128:72" in g
+
+    def test_two_loupes_chain(self):
+        other = Loupe(5_000, 6_000, Rect(0.0, 0.0, 0.1, 0.1), Rect(0.0, 0.0, 0.2, 0.2), "rect")
+        g = edit_graph(SOUND, (), loupes=(self.CIRCLE, other))
+        assert "[lv0]split=2[lb1][lsrc1]" in g
+        assert "[lv1][ol]overlay=0:0" in g
+
+    def test_loupes_then_zoom(self):
+        g = edit_graph(SOUND, (), zoom=ZOOM_IN, loupes=(self.CIRCLE,))
+        assert g.index("alphamerge") < g.index("[lv0][ol]overlay") < g.index("zoompan")
 
 
 class TestParseProgress:

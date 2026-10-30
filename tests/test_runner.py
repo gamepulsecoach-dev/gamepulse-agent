@@ -6,7 +6,7 @@ import pytest
 from conftest import FakeRun
 
 from gp_agent.ffmpeg_cmd import Freeze, Probe
-from gp_agent.edit_cmd import Pause
+from gp_agent.edit_cmd import Loupe, Pause, Rect, ZoomCrop
 from gp_agent.runner import Cancelled, Runner, RunnerError, build_download_args, cache_key
 
 YT = "https://www.youtube.com/watch?v=abc123"
@@ -217,6 +217,26 @@ class TestEdit:
         assert not list(dst.parent.glob("*.part*"))
         assert ctx.reports == [0.25, 0.5]  # output = 3 s clip + 1 s pause
         assert popen.procs[0].args[popen.procs[0].args.index("-progress") + 1] == "pipe:1"
+
+    def test_zoom_and_loupes_go_through_a_graph_file(self, tmp_path, tools):
+        popen = FakePopen()
+        listing = tmp_path / "list.txt"
+        zoom = (ZoomCrop(0, 0, 0, 1, 1), ZoomCrop(1_000, 0.25, 0.25, 0.5, 0.5))
+        loupe = Loupe(0, 1_000, Rect(0, 0, 0.1, 0.1), Rect(0.5, 0.5, 0.2, 0.2), "rect")
+        self.runner(tmp_path, tools, popen).edit(
+            tmp_path / "clip.mp4", tmp_path / "o.mp4", listing, self.CLIP, (), FakeCtx(), zoom=zoom, loupes=(loupe,))
+        args = popen.procs[0].args
+        graph_file = Path(args[args.index("-/filter_complex") + 1])
+        assert graph_file == tmp_path / "graph.txt"
+        text = graph_file.read_text(encoding="utf-8")
+        assert "zoompan" in text and "crop=192:108:0:0" in text
+
+    def test_without_zoom_the_graph_stays_inline(self, tmp_path, tools):
+        popen = FakePopen()
+        self.runner(tmp_path, tools, popen).edit(
+            tmp_path / "clip.mp4", tmp_path / "o.mp4", tmp_path / "list.txt", self.CLIP, (), FakeCtx())
+        assert "-filter_complex" in popen.procs[0].args
+        assert not (tmp_path / "graph.txt").exists()
 
     def test_cancel_kills_ffmpeg_and_leaves_nothing(self, tmp_path, tools):
         popen = FakePopen(write_output=False)

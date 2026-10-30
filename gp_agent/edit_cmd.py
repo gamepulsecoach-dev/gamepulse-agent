@@ -2,7 +2,8 @@
 
 The browser renders the drawings as PNG frames and says how long each one stays
 on screen (output clock); the agent holds the video still at every pause and
-lays that image sequence over it.
+lays that image sequence over it. Loupes (magnified parts of the video) go under
+the drawings; the camera zoom crops the result, so the drawings follow it.
 """
 
 import re
@@ -15,6 +16,9 @@ from gp_agent.ffmpeg_cmd import _SILENCE, AUDIO_RATE, Probe, _plan, _seconds, _t
 # Re-encoding an already encoded clip: a bit more bitrate than a first cut
 EDIT_BITRATE = "8M"
 MAX_VERSIONS = 999
+DEFAULT_FPS = 25.0
+MASK_FRAME_S = "0.04"  # one frame of the loupe mask, repeated by alphamerge
+_COMMA = "\\,"  # comma inside a filter option expression
 
 _EDITED_SUFFIX = re.compile(r"_editado_v\d+$")
 _PROGRESS = re.compile(r"^out_time_(?:us|ms)=(\d+)\s*$")
@@ -30,6 +34,34 @@ class Pause:
 class OverlaySegment:
     image: int  # index into the uploaded images
     dur_ms: int  # how long it stays, on the output clock
+
+
+@dataclass(frozen=True)
+class Rect:
+    """Part of the video in uv (fractions of its width and height)."""
+
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+@dataclass(frozen=True)
+class ZoomCrop:
+    at_ms: int  # output clock; the crop moves linearly to the next one
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+@dataclass(frozen=True)
+class Loupe:
+    start_ms: int  # output clock
+    end_ms: int
+    src: Rect  # magnified part
+    dst: Rect  # where it is drawn
+    shape: str  # 'circle' | 'rect'
 
 
 def output_duration_ms(duration_ms: int, pauses: Sequence[Pause]) -> int:
@@ -54,7 +86,13 @@ def overlay_list_text(segments: Sequence[OverlaySegment], images: Sequence[Path]
     return "\n".join(lines) + "\n"
 
 
-def _edit_graph(duration_ms: int, probe: Probe, pauses: Sequence[Pause]) -> str:
+def edit_graph(
+    probe: Probe, pauses: Sequence[Pause], zoom: Sequence[ZoomCrop] = (), loupes: Sequence[Loupe] = ()
+) -> str:
+    """filter_complex: clip + held pauses, loupes, drawings, then the camera zoom."""
+    if not probe.duration_ms:
+        raise ValueError("clip duration unknown")
+    duration_ms = probe.duration_ms
     w, h = output_size(probe)
     pieces = _plan(duration_ms, sorted(pauses, key=lambda p: p.at_ms))
     seg_count = sum(1 for p in pieces if p[0] == "seg")
@@ -87,21 +125,87 @@ def _edit_graph(duration_ms: int, probe: Probe, pauses: Sequence[Pause]) -> str:
 
     graph.append("".join(outputs) + f"concat=n={len(pieces)}:v=1:a=1[bv][ca]")
     graph.append(f"[1:v]scale={w}:{h},format=rgba,setpts=PTS-STARTPTS[ol]")
-    graph.append("[bv][ol]overlay=0:0:format=auto:eof_action=repeat,format=yuv420p[ov]")
+    base = "bv"
+    for i, loupe in enumerate(loupes):
+        graph += _loupe_chain(i, base, loupe, w, h)
+        base = f"lv{i}"
+    if not zoom:
+        graph.append(f"[{base}][ol]overlay=0:0:format=auto:eof_action=repeat,format=yuv420p[ov]")
+        return ";".join(graph)
+    fps = probe.fps if probe.fps and probe.fps > 0 else DEFAULT_FPS
+    z, x, y = zoom_expressions(zoom)
+    graph.append(f"[{base}][ol]overlay=0:0:format=auto:eof_action=repeat[od]")
+    graph.append(f"[od]fps={fps:g},zoompan=z='1/({z})':x='iw*({x})':y='ih*({y})'"
+                 f":d=1:s={w}x{h}:fps={fps:g},format=yuv420p[ov]")
     return ";".join(graph)
 
 
+def _even(v: float, limit: int) -> int:
+    return max(2, min(limit, round(v / 2) * 2))
+
+
+def _px(r: Rect, w: int, h: int) -> tuple[int, int, int, int]:
+    """Rect in even pixels (yuv420), kept inside the frame."""
+    pw, ph = _even(r.w * w, w), _even(r.h * h, h)
+    px = min(max(0, round(r.x * w / 2) * 2), w - pw)
+    py = min(max(0, round(r.y * h / 2) * 2), h - ph)
+    return px, py, pw, ph
+
+
+def _loupe_chain(i: int, base: str, loupe: Loupe, w: int, h: int) -> list[str]:
+    sx, sy, sw, sh = _px(loupe.src, w, h)
+    dx, dy, dw, dh = _px(loupe.dst, w, h)
+    lens = f"crop={sw}:{sh}:{sx}:{sy},scale={dw}:{dh}"
+    chain = [f"[{base}]split=2[lb{i}][lsrc{i}]"]
+    if loupe.shape == "circle":
+        chain += [
+            f"[lsrc{i}]{lens},format=yuva420p[lc{i}]",
+            f"color=c=black:s={dw}x{dh}:d={MASK_FRAME_S},format=gray,"
+            f"geq=lum='255*lte(hypot((X+0.5-W/2)/(W/2){_COMMA}(Y+0.5-H/2)/(H/2)){_COMMA}1)'[lm{i}]",
+            f"[lc{i}][lm{i}]alphamerge[ll{i}]",
+        ]
+    else:
+        chain.append(f"[lsrc{i}]{lens}[ll{i}]")
+    chain.append(f"[lb{i}][ll{i}]overlay={dx}:{dy}:enable='between(t,{_seconds(loupe.start_ms)},{_seconds(loupe.end_ms)})'[lv{i}]")
+    return chain
+
+
+def _linear(times: Sequence[float], values: Sequence[float]) -> str:
+    """Piecewise-linear value of `it` (seconds): the first value plus one ramp per change."""
+    expr = f"{values[0]:.6f}"
+    for i in range(len(values) - 1):
+        dv = values[i + 1] - values[i]
+        if abs(dv) < 1e-9:
+            continue
+        sign = "+" if dv > 0 else "-"
+        expr += f"{sign}{abs(dv):.6f}*clip((it-{times[i]:.3f})/{times[i + 1] - times[i]:.3f}{_COMMA}0{_COMMA}1)"
+    return expr
+
+
+def zoom_expressions(crops: Sequence[ZoomCrop]) -> tuple[str, str, str]:
+    """zoompan width (uv), left and top (uv) as expressions of the input time."""
+    if not crops:
+        raise ValueError("zoom without crops")
+    times = [c.at_ms / 1000 for c in crops]
+    return (_linear(times, [c.w for c in crops]), _linear(times, [c.x for c in crops]),
+            _linear(times, [c.y for c in crops]))
+
+
 def build_edit_args(
-    ffmpeg: Path, src: Path, overlay_list: Path, dst: Path, encoder: str, probe: Probe, pauses: Sequence[Pause]
+    ffmpeg: Path, src: Path, overlay_list: Path, dst: Path, encoder: str, probe: Probe, pauses: Sequence[Pause],
+    graph_file: Path | None = None,
 ) -> list[str]:
+    """With `graph_file` the graph is read from that file (written by the caller with edit_graph):
+    zoom paths do not fit in a Windows command line."""
     if not probe.duration_ms:
         raise ValueError("clip duration unknown")
+    graph = ["-/filter_complex", str(graph_file)] if graph_file else ["-filter_complex", edit_graph(probe, pauses)]
     return [
         str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostats", "-y",
         "-progress", "pipe:1",
         "-i", str(src),
         "-f", "concat", "-safe", "0", "-i", str(overlay_list),
-        "-filter_complex", _edit_graph(probe.duration_ms, probe, pauses),
+        *graph,
         "-map", "[ov]", "-map", "[ca]",
         "-c:v", encoder, "-b:v", EDIT_BITRATE,
         "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "2",

@@ -69,11 +69,11 @@ class _Ctx:
         self.reports.append(fraction)
 
 
-def _pixel(video: Path, at_s: float) -> tuple[int, int, int]:
-    """RGB of the top-left pixel at `at_s` in the video."""
+def _pixel(video: Path, at_s: float, crop: str = "crop=8:8:0:0") -> tuple[int, int, int]:
+    """RGB of the top-left pixel at `at_s` in the video (or of the given 8x8 crop)."""
     out = subprocess.run(
         [FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", f"{at_s:.3f}", "-i", str(video),
-         "-vf", "crop=8:8:0:0,scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+         "-vf", f"{crop},scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
         capture_output=True, check=True,
     ).stdout
     return out[0], out[1], out[2]
@@ -110,3 +110,37 @@ def test_edit_holds_pauses_and_lays_drawing_frames(runner, media, tmp_path):
     assert g > 200 and r < 60 and b < 60  # drawing over the frozen frame
     assert _pixel(out, 5.0)[1] < 200 or _pixel(out, 5.0)[0] > 60  # drawing gone afterwards
     assert clip.read_bytes()  # original untouched
+
+
+def test_edit_zoom_follows_the_drawings_and_loupe_renders(runner, media, tmp_path):
+    from gp_agent.edit_cmd import Loupe, OverlaySegment, Rect, ZoomCrop
+    from gp_agent.exporter import EditRequest, export
+
+    clip = tmp_path / "Jogo" / "clip.mp4"
+    clip.parent.mkdir()
+    runner.cut(media / "sound.mp4", clip, 0, 3_000, runner.probe(media / "sound.mp4"))
+    png = tmp_path / "corner.png"
+    # green drawing only on the top-left quarter
+    ffmpeg("-f", "lavfi", "-i", "color=c=0x00ff00:s=320x180,format=rgba,pad=640:360:0:0:color=black@0.0",
+           "-frames:v", "1", str(png))
+
+    req = EditRequest(
+        src=clip, pauses=(), segments=(OverlaySegment(0, 3_000),), images=(png.read_bytes(),),
+        # full frame until 0.5 s, 2x on the top-left quarter from 1 s
+        zoom=(ZoomCrop(500, 0, 0, 1, 1), ZoomCrop(1_000, 0, 0, 0.5, 0.5)),
+        loupes=(Loupe(0, 3_000, Rect(0.6, 0.6, 0.1, 0.1), Rect(0.7, 0.7, 0.2, 0.2), "circle"),),
+    )
+    out = export(req, runner, tmp_path, _Ctx())
+
+    got = runner.probe(out)
+    assert (got.width, got.height) == (1920, 1080)
+    assert got.duration_ms == pytest.approx(3_000, abs=150)
+    def centre(at_s):
+        return _pixel(out, at_s, crop="crop=8:8:956:536")
+
+    def green(rgb):
+        return rgb[1] > 200 and rgb[0] < 60 and rgb[2] < 60
+
+    assert green(centre(2.0))  # zoomed: the green quarter fills the frame, drawing included
+    assert not green(centre(0.2))  # full frame: the centre is video
+    assert clip.read_bytes()

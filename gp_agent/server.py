@@ -6,14 +6,15 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from gp_agent import __version__
-from gp_agent.edit_cmd import OverlaySegment, Pause
+from gp_agent.edit_cmd import Loupe, OverlaySegment, Pause, Rect, ZoomCrop
 from gp_agent.exporter import ClipRequest, CompileRequest, EditRequest, Overlay
 from gp_agent.ffmpeg_cmd import Probe
 from gp_agent.files import FileTickets, resolve_export_file
@@ -37,7 +38,11 @@ MAX_BODY_BYTES = 64 * 1024 * 1024
 PAUSE_MIN_MS = 500
 PAUSE_MAX_MS = 10_000
 MAX_PAUSES = 50
-MAX_EDIT_IMAGES = 600
+MAX_EDIT_IMAGES = 1500
+MAX_ZOOM_CROPS = 2000  # site: camera-zoom.js MAX_SAMPLES
+MAX_LOUPES = 10  # site: loupe.js MAX_LOUPES
+ZOOM_MIN_SIZE = 0.25  # crop of a 4x zoom
+UV_EPS = 1e-6
 MAX_SEGMENTS = 20_000
 
 # Paths a browser may open without an Origin header (e.g. typing the url)
@@ -92,11 +97,40 @@ class SegmentIn(_CamelModel):
     dur_ms: int = Field(alias="durMs", ge=1, le=MAX_TIMESTAMP_MS)
 
 
+def _uv(**kw) -> float:
+    return Field(allow_inf_nan=False, **kw)
+
+
+class RectIn(_CamelModel):
+    x: float = _uv(ge=0, le=1)
+    y: float = _uv(ge=0, le=1)
+    w: float = _uv(gt=0, le=1)
+    h: float = _uv(gt=0, le=1)
+
+
+class ZoomCropIn(_CamelModel):
+    at_ms: int = Field(alias="atMs", ge=0, le=MAX_TIMESTAMP_MS)
+    x: float = _uv(ge=0, le=1)
+    y: float = _uv(ge=0, le=1)
+    w: float = _uv(ge=ZOOM_MIN_SIZE - UV_EPS, le=1)
+    h: float = _uv(ge=ZOOM_MIN_SIZE - UV_EPS, le=1)
+
+
+class LoupeIn(_CamelModel):
+    start_ms: int = Field(alias="startMs", ge=0, le=MAX_TIMESTAMP_MS)
+    end_ms: int = Field(alias="endMs", ge=0, le=MAX_TIMESTAMP_MS)
+    src: RectIn
+    dst: RectIn
+    shape: Literal["circle", "rect"]
+
+
 class EditIn(_CamelModel):
     path: str = Field(min_length=1, max_length=MAX_TEXT * 3)
     pauses: list[PauseIn] = Field(default_factory=list, max_length=MAX_PAUSES)
     segments: list[SegmentIn] = Field(min_length=1, max_length=MAX_SEGMENTS)
     images: list[str] = Field(min_length=1, max_length=MAX_EDIT_IMAGES)
+    zoom: list[ZoomCropIn] = Field(default_factory=list, max_length=MAX_ZOOM_CROPS)
+    loupes: list[LoupeIn] = Field(default_factory=list, max_length=MAX_LOUPES)
 
 
 class PairIn(BaseModel):
@@ -124,9 +158,34 @@ def _decode_png(b64: str) -> bytes:
     return data
 
 
+def _inside(r: RectIn | ZoomCropIn) -> bool:
+    return r.x + r.w <= 1 + UV_EPS and r.y + r.h <= 1 + UV_EPS
+
+
+def _rect(r: RectIn) -> Rect:
+    return Rect(r.x, r.y, r.w, r.h)
+
+
+def _zoom(crops: list[ZoomCropIn]) -> tuple[ZoomCrop, ...]:
+    if any(b.at_ms <= a.at_ms for a, b in zip(crops, crops[1:])):
+        raise BadInput("Zoom com tempos fora de ordem")
+    if not all(_inside(c) for c in crops):
+        raise BadInput("Zoom fora do vídeo")
+    return tuple(ZoomCrop(c.at_ms, c.x, c.y, c.w, c.h) for c in crops)
+
+
+def _loupes(items: list[LoupeIn]) -> tuple[Loupe, ...]:
+    if any(lp.end_ms <= lp.start_ms for lp in items):
+        raise BadInput("Lupa sem duração")
+    if not all(_inside(lp.src) and _inside(lp.dst) for lp in items):
+        raise BadInput("Lupa fora do vídeo")
+    return tuple(Loupe(lp.start_ms, lp.end_ms, _rect(lp.src), _rect(lp.dst), lp.shape) for lp in items)
+
+
 def _to_edit(body: EditIn, export_dir: Path) -> EditRequest:
     if any(seg.image >= len(body.images) for seg in body.segments):
         raise BadInput("Segmento do desenho sem imagem")
+    zoom, loupes = _zoom(body.zoom), _loupes(body.loupes)
     try:
         src = resolve_export_file(export_dir, body.path)
     except ValueError:
@@ -136,6 +195,8 @@ def _to_edit(body: EditIn, export_dir: Path) -> EditRequest:
         pauses=tuple(Pause(p.at_ms, p.dur_ms) for p in body.pauses),
         segments=tuple(OverlaySegment(s.image, s.dur_ms) for s in body.segments),
         images=tuple(_decode_png(img) for img in body.images),
+        zoom=zoom,
+        loupes=loupes,
     )
 
 
@@ -199,6 +260,13 @@ def create_app(
     @app.exception_handler(BadInput)
     async def bad_input(_request: Request, exc: BadInput) -> JSONResponse:
         return _error(400, str(exc))
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_body(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Never echo the input back: NaN/Infinity would break the JSON response
+        first = exc.errors()[0] if exc.errors() else {}
+        where = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+        return _error(422, f"Pedido inválido: {where}" if where else "Pedido inválido")
 
     @app.middleware("http")
     async def guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:

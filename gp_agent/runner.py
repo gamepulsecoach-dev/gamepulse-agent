@@ -12,7 +12,15 @@ from pathlib import Path
 from typing import Protocol
 
 from gp_agent.cache import CacheEntry, plan_eviction
-from gp_agent.edit_cmd import Pause, build_edit_args, output_duration_ms, parse_progress_ms
+from gp_agent.edit_cmd import (
+    Loupe,
+    Pause,
+    ZoomCrop,
+    build_edit_args,
+    edit_graph,
+    output_duration_ms,
+    parse_progress_ms,
+)
 from gp_agent.ffmpeg_cmd import (
     MAX_HEIGHT,
     Freeze,
@@ -192,13 +200,19 @@ class Runner:
         )
 
     def edit(
-        self, src: Path, dst: Path, overlay_list: Path, probe: Probe, pauses: Sequence[Pause], ctx: Progress
+        self, src: Path, dst: Path, overlay_list: Path, probe: Probe, pauses: Sequence[Pause], ctx: Progress,
+        zoom: Sequence[ZoomCrop] = (), loupes: Sequence[Loupe] = (),
     ) -> None:
-        """Clip + held pauses + drawing frames -> dst, with progress and cancel."""
+        """Clip + held pauses + loupes + drawing frames + camera zoom -> dst, with progress and cancel."""
         total_ms = output_duration_ms(probe.duration_ms or 0, pauses)
+        graph_file = None
+        if zoom or loupes:
+            graph_file = overlay_list.with_name("graph.txt")
+            graph_file.write_text(edit_graph(probe, pauses, zoom, loupes), encoding="utf-8")
         self._write_atomically(
             dst,
-            lambda tmp: build_edit_args(self.tools.ffmpeg, src, overlay_list, tmp, self.tools.encoder, probe, pauses),
+            lambda tmp: build_edit_args(self.tools.ffmpeg, src, overlay_list, tmp, self.tools.encoder, probe, pauses,
+                                        graph_file),
             CUT_TIMEOUT_S, "Exportação do clip editado",
             execute=lambda args: self._exec_progress(args, CUT_TIMEOUT_S, "Exportação do clip editado", total_ms, ctx),
         )

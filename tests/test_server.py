@@ -1,17 +1,19 @@
 import base64
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from test_overlay import make_png
 
-from gp_agent.edit_cmd import OverlaySegment, Pause
+from gp_agent.edit_cmd import Loupe, OverlaySegment, Pause, Rect, ZoomCrop
 from gp_agent.exporter import CompileRequest, EditRequest
 from gp_agent.ffmpeg_cmd import Probe
 from gp_agent.files import FileTickets
 from gp_agent.jobs import JobQueue
 from gp_agent.pairing import MAX_ATTEMPTS, Pairing, TokenStore
 from gp_agent.runner import RunnerError
+from gp_agent import server
 from gp_agent.server import MAX_BODY_BYTES, Settings, create_app
 
 ORIGIN = "https://gamepulsecoach.com"
@@ -475,6 +477,61 @@ class TestEdit:
         token = h.pair()
         resp = h.client.post("/edit", json=edit_body(**over), headers={"Origin": ORIGIN, "X-GP-Token": token})
         assert resp.status_code == 422
+
+
+ZOOM = [{"atMs": 0, "x": 0, "y": 0, "w": 1, "h": 1}, {"atMs": 1000, "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}]
+LOUPE = {"startMs": 500, "endMs": 2500, "src": {"x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1},
+         "dst": {"x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}, "shape": "circle"}
+
+
+class TestEditZoomAndLoupes:
+    def post(self, h, **over):
+        write_clip(h)
+        token = h.pair()
+        return h.client.post("/edit", json=edit_body(**over), headers={"Origin": ORIGIN, "X-GP-Token": token})
+
+    def test_builds_zoom_and_loupes(self, h):
+        assert self.post(h, zoom=ZOOM, loupes=[LOUPE]).status_code == 202
+        req = h.requests[-1]
+        assert req.zoom == (ZoomCrop(0, 0, 0, 1, 1), ZoomCrop(1000, 0.25, 0.25, 0.5, 0.5))
+        assert req.loupes == (Loupe(500, 2500, Rect(0.1, 0.1, 0.1, 0.1), Rect(0.5, 0.5, 0.2, 0.2), "circle"),)
+
+    def test_both_are_optional(self, h):
+        assert self.post(h).status_code == 202
+        assert h.requests[-1].zoom == () and h.requests[-1].loupes == ()
+
+    @pytest.mark.parametrize("over", [
+        {"zoom": [ZOOM[1], ZOOM[0]]},  # out of order
+        {"zoom": [ZOOM[0], {**ZOOM[1], "atMs": 0}]},  # same time twice
+        {"zoom": [{**ZOOM[1], "x": 0.8}]},  # crop leaves the video
+        {"loupes": [{**LOUPE, "endMs": 500}]},
+        {"loupes": [{**LOUPE, "dst": {"x": 0.9, "y": 0.5, "w": 0.2, "h": 0.2}}]},
+    ])
+    def test_inconsistent_values(self, h, over):
+        assert self.post(h, **over).status_code == 400
+        assert h.requests == []
+
+    @pytest.mark.parametrize("over", [
+        {"zoom": [{**ZOOM[1], "w": 0.1, "h": 0.1}]},  # beyond 4x
+        {"zoom": [{**ZOOM[1], "x": -0.1}]},
+        {"loupes": [{**LOUPE, "shape": "star"}]},
+        {"loupes": [LOUPE] * (server.MAX_LOUPES + 1)},
+        {"loupes": [{**LOUPE, "src": {"x": 0.1, "y": 0.1, "w": 0, "h": 0.1}}]},
+    ])
+    def test_invalid_fields(self, h, over):
+        assert self.post(h, **over).status_code == 422
+
+    def test_rejects_nan(self, h):
+        write_clip(h)
+        token = h.pair()
+        raw = json.dumps(edit_body(zoom=ZOOM)).replace('"x": 0.25', '"x": NaN')
+        resp = h.client.post("/edit", content=raw, headers={
+            "Origin": ORIGIN, "X-GP-Token": token, "Content-Type": "application/json"})
+        assert resp.status_code == 422
+
+    def test_limits_for_0_4(self):
+        assert server.MAX_EDIT_IMAGES == 1500
+        assert server.MAX_ZOOM_CROPS >= 2000
 
 
 class TestJobProgressAndCancel:
