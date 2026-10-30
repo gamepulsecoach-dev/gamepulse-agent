@@ -29,6 +29,7 @@ class ClipRequest:
     index: int
     overlays: tuple[Overlay, ...] = ()
     team: str = ""
+    folder: str = ""  # dossier: one folder for clips of several games
 
 
 @dataclass(frozen=True)
@@ -83,7 +84,7 @@ def _render(req: ClipRequest, src: Path, runner: Runner, dst: Path, workdir: Pat
 
 def export_clip(req: ClipRequest, runner: Runner, export_dir: Path) -> Path:
     _validate(req)
-    dst = clip_path(export_dir, req.game, req.category, req.index, req.timestamp_ms, req.team)
+    dst = clip_path(export_dir, req.game, req.category, req.index, req.timestamp_ms, req.team, req.folder)
     src = runner.ensure_video(req.video_url)
     runner.evict(in_use=frozenset({src}))
     with tempfile.TemporaryDirectory(prefix="gp_clip_") as tmp:

@@ -89,3 +89,23 @@ class TestTeamFolder:
     def test_compilation_goes_under_team_then_game(self, tmp_path: Path):
         path = compilation_path(tmp_path, "vs Contacto", "Golos", team="Lusa")
         assert path == tmp_path / "Lusa" / "vs Contacto" / "vs-Contacto_Compilado_Golos.mp4"
+
+
+class TestDossierFolder:
+    def test_folder_replaces_game_and_category_folders(self, tmp_path: Path):
+        path = clip_path(tmp_path, "2026-10-12 vs Porto", "Cantos", 2, 750_000, team="Braga", folder="Dossier Cantos")
+        assert path == tmp_path / "Braga" / "Dossier Cantos" / "2026-10-12-vs-Porto_Cantos_02_12m30s.mp4"
+
+    def test_folder_without_team_sits_at_the_top(self, tmp_path: Path):
+        path = clip_path(tmp_path, "Jogo", "Cantos", 1, 0, folder="Dossier Cantos")
+        assert path == tmp_path / "Dossier Cantos" / "Jogo_Cantos_01_00m00s.mp4"
+
+    def test_blank_folder_keeps_the_usual_layout(self, tmp_path: Path):
+        path = clip_path(tmp_path, "Jogo", "Cantos", 1, 0, team="Braga", folder="   ")
+        assert path == tmp_path / "Braga" / "Jogo" / "Cantos" / "Jogo_Cantos_01_00m00s.mp4"
+
+    def test_hostile_folder_stays_inside_base(self, tmp_path: Path):
+        path = clip_path(tmp_path, "J", "C", 1, 0, team="Braga", folder="..\..\Windows")
+        assert path.resolve().is_relative_to(tmp_path.resolve())
+        assert path.parent.name == "Windows"
+        assert path.parent.parent.name == "Braga"

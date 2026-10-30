@@ -584,3 +584,23 @@ class TestTeamField:
         token = h.pair()
         h.client.post("/compile", json=compile_body(team="Lusa"), headers={"Origin": ORIGIN, "X-GP-Token": token})
         assert h.requests[0].team == "Lusa"
+
+
+class TestFolderField:
+    def test_clip_without_folder_defaults_to_empty(self, h):
+        token = h.pair()
+        h.client.post("/clip", json=clip_body(), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert h.requests[0].folder == ""
+
+    def test_clip_folder_reaches_the_request(self, h):
+        token = h.pair()
+        h.client.post("/clip", json=clip_body(team="Braga", folder="Dossier Cantos"),
+                      headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert h.requests[0].folder == "Dossier Cantos"
+        assert h.requests[0].team == "Braga"
+
+    def test_clip_folder_too_long_is_422(self, h):
+        token = h.pair()
+        r = h.client.post("/clip", json=clip_body(folder="x" * 201), headers={"Origin": ORIGIN, "X-GP-Token": token})
+        assert r.status_code == 422
+        assert not h.requests

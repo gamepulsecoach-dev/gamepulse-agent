@@ -46,6 +46,11 @@ class TestExportClip:
         assert arg(cut, "-ss") == "25.000"
         assert arg(cut, "-t") == "8.000"
 
+    def test_dossier_folder_under_team(self, make_runner, tmp_path):
+        out = export_clip(req(timestamp_ms=30_000, team="Braga", folder="Dossier Golo"), make_runner(FakeRun()), tmp_path)
+        assert out == tmp_path / "Braga" / "Dossier Golo" / "Braga-vs-Porto_Golo_01_00m30s.mp4"
+        assert out.exists()
+
     def test_window_clamped_to_video_duration(self, make_runner, tmp_path):
         run = FakeRun()  # probe says 60 s
         export_clip(req(timestamp_ms=59_000), make_runner(run), tmp_path)

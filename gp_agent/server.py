@@ -80,6 +80,7 @@ class ClipIn(ClipPartIn):
     game: str = Field(max_length=MAX_TEXT)
     category: str = Field(max_length=MAX_TEXT)
     index: int = Field(ge=1, le=999)
+    folder: str = Field(default="", max_length=MAX_TEXT)
 
 
 class CompileIn(_CamelModel):
@@ -202,14 +203,16 @@ def _to_edit(body: EditIn, export_dir: Path) -> EditRequest:
     )
 
 
-def _to_request(part: ClipPartIn, game: str, category: str, index: int, team: str = "") -> ClipRequest:
+def _to_request(
+    part: ClipPartIn, game: str, category: str, index: int, team: str = "", folder: str = ""
+) -> ClipRequest:
     try:
         classify_source(part.video_url)
     except ValueError:
         raise BadInput("Fonte de vídeo não suportada") from None
     return ClipRequest(
         video_url=part.video_url, timestamp_ms=part.timestamp_ms, pre_ms=part.pre_ms, post_ms=part.post_ms,
-        game=game, category=category, index=index, team=team,
+        game=game, category=category, index=index, team=team, folder=folder,
         overlays=tuple(_decode_overlay(ov) for ov in part.overlays),
     )
 
@@ -316,7 +319,7 @@ def create_app(
 
     @app.post("/clip", status_code=202, dependencies=[Depends(require_token)])
     def clip(body: ClipIn) -> JSONResponse:
-        job = queue.submit(_to_request(body, body.game, body.category, body.index, body.team))
+        job = queue.submit(_to_request(body, body.game, body.category, body.index, body.team, body.folder))
         return JSONResponse({"jobId": job.id}, status_code=202)
 
     @app.post("/compile", status_code=202, dependencies=[Depends(require_token)])
