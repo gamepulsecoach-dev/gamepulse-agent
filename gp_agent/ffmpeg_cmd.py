@@ -190,6 +190,43 @@ def concat_list_text(parts: Iterable[Path]) -> str:
     return "\n".join(lines) + "\n"
 
 
+DEFAULT_JOIN_FPS = 25.0
+
+
+def same_format(probes: Sequence[Probe]) -> bool:
+    """Stream copy only joins clips cleanly when size and frame rate match."""
+    first = probes[0]
+    return all((p.width, p.height, p.fps) == (first.width, first.height, first.fps) for p in probes)
+
+
+def build_concat_reencode_args(
+    ffmpeg: Path, parts: Sequence[Path], dst: Path, encoder: str, target: Probe
+) -> list[str]:
+    """Join clips from different videos (e.g. games at 60 and 29.97 fps) re-encoded to the first clip's format."""
+    w, h = target.width, target.height
+    fps = f"{target.fps if target.fps and target.fps > 0 else DEFAULT_JOIN_FPS:g}"
+    args = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y"]
+    graph, outputs = [], []
+    for i, part in enumerate(parts):
+        args += ["-i", str(part)]
+        graph.append(
+            f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
+            f"setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS[v{i}]"
+        )
+        # Every cut clip has audio (silence is added when the source has none)
+        graph.append(f"[{i}:a]aresample={AUDIO_RATE},aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS[a{i}]")
+        outputs.append(f"[v{i}][a{i}]")
+    graph.append("".join(outputs) + f"concat=n={len(parts)}:v=1:a=1[cv][ca]")
+    return args + [
+        "-filter_complex", ";".join(graph),
+        "-map", "[cv]", "-map", "[ca]",
+        "-c:v", encoder, "-b:v", VIDEO_BITRATE,
+        "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "2",
+        "-movflags", "+faststart",
+        str(dst),
+    ]
+
+
 def build_concat_args(ffmpeg: Path, list_file: Path, dst: Path) -> list[str]:
     return [
         str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",

@@ -8,6 +8,8 @@ from gp_agent.ffmpeg_cmd import (
     Probe,
     build_clip_args,
     build_concat_args,
+    build_concat_reencode_args,
+    same_format,
     clip_window,
     concat_list_text,
     output_size,
@@ -190,3 +192,34 @@ class TestConcat:
         assert arg(args, "-i") == "list.txt"
         assert arg(args, "-c") == "copy"
         assert args[-1] == "out.mp4"
+
+
+class TestConcatMixedFormats:
+    P60 = Probe(1920, 1080, True, 10_000, fps=60.0)
+    P30 = Probe(1920, 1080, True, 10_000, fps=29.97)
+
+    def test_same_format_compares_size_and_fps(self):
+        assert same_format([self.P60, Probe(1920, 1080, False, 5_000, fps=60.0)])
+        assert not same_format([self.P60, self.P30])
+        assert not same_format([self.P60, Probe(1280, 720, True, 10_000, fps=60.0)])
+
+    def test_reencode_normalises_every_part_to_the_first(self):
+        parts = [Path("a.mp4"), Path("b.mp4"), Path("c.mp4")]
+        args = build_concat_reencode_args(FF, parts, DST, "h264_mf", self.P60)
+        assert [args[i + 1] for i, a in enumerate(args) if a == "-i"] == ["a.mp4", "b.mp4", "c.mp4"]
+        graph = arg(args, "-filter_complex")
+        for i in range(3):
+            assert f"[{i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080" in graph
+            assert f"[{i}:a]aresample=48000" in graph
+        assert graph.count("fps=60") == 3
+        assert "concat=n=3:v=1:a=1[cv][ca]" in graph
+        assert arg(args, "-c:v") == "h264_mf"
+        assert arg(args, "-c:a") == "aac"
+        assert "-c" not in args  # never stream copy
+        assert args[-1] == "out.mp4"
+
+    def test_reencode_keeps_fractional_fps_and_defaults_when_unknown(self):
+        graph = arg(build_concat_reencode_args(FF, [SRC, SRC], DST, "h264_mf", self.P30), "-filter_complex")
+        assert "fps=29.97" in graph
+        unknown = Probe(1920, 1080, True, 10_000, fps=None)
+        assert "fps=25" in arg(build_concat_reencode_args(FF, [SRC, SRC], DST, "h264_mf", unknown), "-filter_complex")

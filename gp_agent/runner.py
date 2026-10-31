@@ -27,7 +27,9 @@ from gp_agent.ffmpeg_cmd import (
     Probe,
     build_clip_args,
     build_concat_args,
+    build_concat_reencode_args,
     concat_list_text,
+    same_format,
     parse_probe,
 )
 
@@ -221,6 +223,15 @@ class Runner:
         if not parts:
             raise ValueError("nothing to join")
         dst.parent.mkdir(parents=True, exist_ok=True)
+        if len(parts) > 1:
+            probes = [self.probe(p) for p in parts]
+            if not same_format(probes):
+                self._write_atomically(
+                    dst,
+                    lambda tmp: build_concat_reencode_args(self.tools.ffmpeg, parts, tmp, self.tools.encoder, probes[0]),
+                    CUT_TIMEOUT_S * len(parts), "Compilação",
+                )
+                return
         list_file = dst.with_name(f"{dst.stem}.list.txt")
         list_file.write_text(concat_list_text(parts), encoding="utf-8")
         try:

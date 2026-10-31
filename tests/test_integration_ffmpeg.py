@@ -1,5 +1,6 @@
 """Runs the real ffmpeg on synthetic media; skipped when ffmpeg is not installed."""
 
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,8 @@ def media(tmp_path_factory):
     ffmpeg("-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=25:duration=12",
            "-f", "lavfi", "-i", "sine=duration=12:sample_rate=44100", "-c:v", "mpeg4", "-c:a", "aac", str(d / "sound.mp4"))
     ffmpeg("-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=25:duration=6", "-c:v", "mpeg4", str(d / "mute.mp4"))
+    ffmpeg("-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=60:duration=6",
+           "-f", "lavfi", "-i", "sine=duration=6:sample_rate=48000", "-c:v", "mpeg4", "-c:a", "aac", str(d / "fast.mp4"))
     ffmpeg("-f", "lavfi", "-i", "color=c=red@0.5:s=1280x800,format=rgba", "-frames:v", "1", str(d / "draw.png"))
     return d
 
@@ -144,3 +147,19 @@ def test_edit_zoom_follows_the_drawings_and_loupe_renders(runner, media, tmp_pat
     assert green(centre(2.0))  # zoomed: the green quarter fills the frame, drawing included
     assert not green(centre(0.2))  # full frame: the centre is video
     assert clip.read_bytes()
+
+
+def test_compilation_of_games_with_different_fps_has_no_frozen_gap(runner, media, tmp_path):
+    # Real case: one game at 60 fps, another at 25/29.97 fps -> stream copy froze the picture
+    fast, slow = tmp_path / "fast.mp4", tmp_path / "slow.mp4"
+    runner.cut(media / "fast.mp4", fast, 1_000, 4_000, runner.probe(media / "fast.mp4"))
+    runner.cut(media / "sound.mp4", slow, 1_000, 4_000, runner.probe(media / "sound.mp4"))
+    joined = tmp_path / "out" / "mixed.mp4"
+    runner.concat([fast, slow], joined)
+    got = runner.probe(joined)
+    assert got.fps == 60.0
+    assert got.duration_ms == pytest.approx(6_000, abs=200)
+    out = subprocess.run([FFMPEG, "-hide_banner", "-i", str(joined), "-map", "0:v", "-f", "null", "-"],
+                         capture_output=True, text=True)
+    frames = int(re.findall(r"frame=\s*(\d+)", out.stderr)[-1])
+    assert frames == pytest.approx(6 * 60, abs=6)  # real pictures for the whole duration

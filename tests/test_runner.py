@@ -11,6 +11,11 @@ from gp_agent.runner import Cancelled, Runner, RunnerError, build_download_args,
 
 YT = "https://www.youtube.com/watch?v=abc123"
 HD = Probe(1920, 1080, True, 60_000)
+PROBE_60 = (
+    "  Duration: 00:00:10.00, start: 0.000000, bitrate: 1205 kb/s\n"
+    "  Stream #0:0(und): Video: h264 (High), yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 60 fps\n"
+    "  Stream #0:1(und): Audio: aac (LC), 48000 Hz, stereo\n"
+)
 
 
 class TestCacheKey:
@@ -126,7 +131,28 @@ class TestConcat:
         make_runner(run).concat(parts, dst)
         assert dst.read_bytes() == b"clip"
         assert sorted(p.name for p in dst.parent.iterdir()) == ["all.mp4"]
-        assert "concat" in run.calls[0]
+        assert len(run.tool_calls("concat")) == 1  # same format -> stream copy
+
+    def test_mixed_fps_reencodes_instead_of_copy(self, make_runner, tmp_path):
+        # Games filmed at 60 and 29.97 fps: stream copy left frozen frames between clips
+        def probe(src):
+            fps = "60 fps" if src.endswith("a.mp4") else "29.97 fps"
+            return PROBE_60.replace("60 fps", fps)
+        run = FakeRun(probe_stderr=probe)
+        parts = [tmp_path / "a.mp4", tmp_path / "b.mp4"]
+        dst = tmp_path / "out" / "all.mp4"
+        make_runner(run).concat(parts, dst)
+        assert dst.read_bytes() == b"clip"
+        assert run.tool_calls("concat") == []
+        joined = [c for c in run.calls if "-filter_complex" in c]
+        assert len(joined) == 1
+        assert "fps=60" in joined[0][joined[0].index("-filter_complex") + 1]
+        assert sorted(p.name for p in dst.parent.iterdir()) == ["all.mp4"]
+
+    def test_single_part_is_not_probed(self, make_runner, tmp_path):
+        run = FakeRun()
+        make_runner(run).concat([tmp_path / "a.mp4"], tmp_path / "o.mp4")
+        assert len(run.calls) == 1
 
     def test_needs_parts(self, make_runner, tmp_path):
         with pytest.raises(ValueError):

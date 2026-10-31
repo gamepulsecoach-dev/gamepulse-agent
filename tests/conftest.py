@@ -25,7 +25,9 @@ class FakeRun:
     def __call__(self, args, **kwargs):
         self.calls.append(args)
         if "-movflags" not in args and "-o" not in args:  # ffmpeg -i <src>: probe
-            return subprocess.CompletedProcess(args, 1, "", self.probe_stderr)
+            # probe_stderr may be a function of the probed file (per-file formats)
+            stderr = self.probe_stderr(args[-1]) if callable(self.probe_stderr) else self.probe_stderr
+            return subprocess.CompletedProcess(args, 1, "", stderr)
         if self.returncode == 0 and self.write_output:
             if "-o" in args:  # yt-dlp: template "<dir>/<key>.%(ext)s"
                 Path(args[args.index("-o") + 1].replace("%(ext)s", "mp4")).write_bytes(b"video")
