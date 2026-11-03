@@ -92,6 +92,16 @@ class TestParseProbe:
     def test_fractional_fps(self):
         assert parse_probe(FFMPEG_STDERR.replace("25 fps", "29.97 fps")).fps == 29.97
 
+    def test_average_fps_close_to_a_standard_rate_snaps_to_it(self):
+        # h264_videotoolbox clips report the average rate (e.g. 60.42 for a 60 fps clip)
+        assert parse_probe(FFMPEG_STDERR.replace("25 fps", "60.42 fps")).fps == 60.0
+        assert parse_probe(FFMPEG_STDERR.replace("25 fps", "29.9 fps")).fps == 29.97
+        assert parse_probe(FFMPEG_STDERR.replace("25 fps", "24.8 fps")).fps == 25.0
+
+    def test_unusual_fps_is_kept(self):
+        assert parse_probe(FFMPEG_STDERR.replace("25 fps", "15 fps")).fps == 15.0
+        assert parse_probe(FFMPEG_STDERR.replace("25 fps", "45.5 fps")).fps == 45.5
+
     def test_fps_missing(self):
         assert parse_probe(FFMPEG_STDERR.replace(", 25 fps", "")).fps is None
 

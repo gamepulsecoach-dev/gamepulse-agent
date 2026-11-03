@@ -20,6 +20,14 @@ _VIDEO = re.compile(r"Stream #\S+.*?: Video: .*?\b(\d{2,5})x(\d{2,5})\b.*")
 _FPS = re.compile(r"\b(\d+(?:\.\d+)?) fps\b")
 _AUDIO = re.compile(r"Stream #\S+.*?: Audio:")
 _SILENCE = f"anullsrc=r={AUDIO_RATE}:cl=stereo"
+# ffmpeg prints the average rate, which drifts off the nominal one (h264_videotoolbox: 60.42 for 60)
+_STANDARD_FPS = (23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0)
+_FPS_SNAP_TOLERANCE = 0.01
+
+
+def _nominal_fps(fps: float) -> float:
+    nearest = min(_STANDARD_FPS, key=lambda s: abs(s - fps))
+    return nearest if abs(nearest - fps) <= nearest * _FPS_SNAP_TOLERANCE else fps
 
 
 @dataclass(frozen=True)
@@ -80,7 +88,7 @@ def parse_probe(stderr: str) -> Probe:
     fps = _FPS.search(video.group(0))
     return Probe(
         int(video.group(1)), int(video.group(2)), bool(_AUDIO.search(stderr)), duration_ms,
-        fps=float(fps.group(1)) if fps else None,
+        fps=_nominal_fps(float(fps.group(1))) if fps else None,
     )
 
 
