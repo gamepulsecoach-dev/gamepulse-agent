@@ -81,7 +81,7 @@ def main() -> int:
         port=int(env.get("GP_AGENT_PORT", DEFAULT_PORT)),  # override only for local testing
     )
     if not _port_free(settings.port):
-        log.error("Porta %d ocupada — o agente já está a correr?", settings.port)
+        log.error("Porta %d ocupada — o GamePulse Studio já está a correr?", settings.port)
         return 1
 
     server_box: list[uvicorn.Server] = []

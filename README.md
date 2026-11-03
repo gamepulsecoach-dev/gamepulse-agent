@@ -1,16 +1,16 @@
-# GamePulse Agent
+# GamePulse Studio
 
-Agente local que corta clips MP4 a partir das acções registadas no Analyser do [GamePulse](https://gamepulsecoach.com).
+Programa local que corta clips MP4 a partir das acções registadas no Analyser do [GamePulse](https://gamepulsecoach.com).
 
-Corre só no seu computador (`localhost:7777`). O site envia-lhe o vídeo, o momento da acção e o desenho do Telestrator; o agente descarrega o vídeo, corta o clip e grava-o em `Documentos\GamePulse\<Jogo>\<Categoria>\`.
+Corre só no seu computador (`localhost:7777`). O site envia-lhe o vídeo, o momento da acção e o desenho do Telestrator; o GamePulse Studio descarrega o vídeo, corta o clip e grava-o em `Documentos\GamePulse\<Jogo>\<Categoria>\`.
 
 ## Instalar (Windows 10/11)
 
-1. Descarregue `GamePulseAgent-Setup-<versão>.exe` da página [Releases](../../releases/latest).
+1. Descarregue `GamePulseStudio-Setup-<versão>.exe` da página [Releases](../../releases/latest).
 2. Execute-o. Não precisa de permissões de administrador.
    - Se o Windows mostrar "O Windows protegeu o seu PC", clique em **Mais informações → Executar mesmo assim** (o instalador ainda não tem assinatura de código).
-3. O agente arranca com o Windows e mostra um ícone verde na barra de tarefas.
-4. No GamePulse, abra o Analyser → aba **Clips** → **Emparelhar** e introduza o código de 6 dígitos que aparece na notificação do agente.
+3. O GamePulse Studio arranca com o Windows e mostra um ícone verde na barra de tarefas.
+4. No GamePulse, abra o Analyser → aba **Clips** → **Emparelhar** e introduza o código de 6 dígitos que aparece na notificação do GamePulse Studio.
 
 macOS: em preparação.
 

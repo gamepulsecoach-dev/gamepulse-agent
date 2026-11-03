@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from gp_agent.runner import Cancelled, RunnerError
 
 MAX_JOBS = 200
-GENERIC_ERROR = "Erro inesperado no agente"
+GENERIC_ERROR = "Erro inesperado no GamePulse Studio"
 
 log = logging.getLogger(__name__)
 

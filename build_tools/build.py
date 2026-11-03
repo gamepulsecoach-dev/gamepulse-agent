@@ -1,4 +1,4 @@
-"""Build the agent with PyInstaller: python -m build_tools.build --tools <dir with yt-dlp + ffmpeg>.
+"""Build GamePulse Studio with PyInstaller: python -m build_tools.build --tools <dir with yt-dlp + ffmpeg>.
 
 The tools dir must hold the binaries that ship with the agent (CI fetches the
 LGPL ffmpeg build and the yt-dlp release; locally any copy works for testing).
@@ -8,7 +8,7 @@ import argparse
 import sys
 from pathlib import Path
 
-APP_NAME = "GamePulseAgent"
+APP_NAME = "GamePulseStudio"
 BUNDLE_ID = "com.gamepulsecoach.agent"
 ROOT = Path(__file__).resolve().parent.parent
 

@@ -254,7 +254,7 @@ def create_app(
     tickets: FileTickets,
     probe: Callable[[Path], Probe],
 ) -> FastAPI:
-    app = FastAPI(title="GamePulse Agent", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="GamePulse Studio", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     allowed_hosts = {f"localhost:{settings.port}", f"127.0.0.1:{settings.port}"}
 
     @app.exception_handler(HTTPException)
@@ -296,7 +296,7 @@ def create_app(
 
     def require_token(x_gp_token: Annotated[str | None, Header()] = None) -> None:
         if not token_matches(tokens.load() or "", x_gp_token):
-            raise HTTPException(status_code=401, detail="Agente não emparelhado com este browser")
+            raise HTTPException(status_code=401, detail="GamePulse Studio não emparelhado com este browser")
 
     @app.get("/health")
     def health() -> dict:

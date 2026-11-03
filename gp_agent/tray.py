@@ -11,7 +11,7 @@ from types import ModuleType
 
 log = logging.getLogger(__name__)
 
-TITLE = "GamePulse Agent"
+TITLE = "GamePulse Studio"
 ICON_SIZE = 64
 ICON_GREEN = (34, 197, 94, 255)
 
@@ -81,7 +81,7 @@ class Tray:
             backend.MenuItem("Abrir pasta dos clips", lambda *_: self._open_dir(self._export_dir)),
             backend.MenuItem("Sair", lambda *_: self.quit()),
         )
-        self._icon = backend.Icon("gamepulse-agent", _icon_image(), TITLE, menu)
+        self._icon = backend.Icon("gamepulse-studio", _icon_image(), TITLE, menu)
 
     def show_code(self, code: str) -> None:
         message = pairing_message(code)
