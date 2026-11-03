@@ -15,6 +15,7 @@ from gp_agent.ffmpeg_cmd import (
     output_size,
     parse_probe,
     pick_encoder,
+    video_codec_args,
 )
 
 HD = Probe(width=1920, height=1080, has_audio=True, duration_ms=60_000)
@@ -58,6 +59,21 @@ class TestPickEncoder:
     def test_other_platforms_unsupported(self):
         with pytest.raises(ValueError):
             pick_encoder("linux")
+
+
+class TestVideoCodecArgs:
+    def test_media_foundation_plain(self):
+        assert video_codec_args("h264_mf", "8M") == ["-c:v", "h264_mf", "-b:v", "8M"]
+
+    def test_videotoolbox_allows_software_fallback(self):
+        # Macs/VMs without a hardware encoder session would otherwise fail
+        assert video_codec_args("h264_videotoolbox", "8M") == [
+            "-c:v", "h264_videotoolbox", "-b:v", "8M", "-allow_sw", "1",
+        ]
+
+    def test_clip_args_use_it(self):
+        args = build_clip_args(FF, SRC, DST, 0, 8_000, "h264_videotoolbox", HD)
+        assert arg(args, "-allow_sw") == "1"
 
 
 FFMPEG_STDERR = """

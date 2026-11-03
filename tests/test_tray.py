@@ -86,9 +86,28 @@ class TestCodeDialog:
         assert hwnd is None and text == "msg 123456" and title == TITLE
         assert flags & tray.MB_TOPMOST and flags & tray.MB_SETFOREGROUND
 
+    def test_macos_uses_osascript_dialog(self):
+        calls = []
+        tray.code_dialog("Código: 123456", TITLE, platform="darwin", run=lambda args, **k: calls.append(args))
+        cmd, flag, script = calls[0]
+        assert (cmd, flag) == ("osascript", "-e")
+        assert 'display dialog "Código: 123456"' in script and f'with title "{TITLE}"' in script
+
+    def test_macos_escapes_applescript_strings(self):
+        calls = []
+        tray.code_dialog(r'a "b" \ c', TITLE, platform="darwin", run=lambda args, **k: calls.append(args))
+        assert r'display dialog "a \"b\" \\ c"' in calls[0][2]
+
+    def test_macos_dialog_failure_is_logged_not_raised(self, caplog):
+        def boom(*_a, **_k):
+            raise OSError("no osascript")
+
+        tray.code_dialog("x", TITLE, platform="darwin", run=boom)
+        assert "osascript" in caplog.text
+
     def test_other_platforms_noop(self, monkeypatch):
         monkeypatch.setattr(tray, "_user32", lambda: (_ for _ in ()).throw(AssertionError("called")))
-        tray.code_dialog("msg", TITLE, platform="darwin")
+        tray.code_dialog("msg", TITLE, platform="linux", run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
 
     def test_open_folder_item(self, tmp_path):
         opened = []

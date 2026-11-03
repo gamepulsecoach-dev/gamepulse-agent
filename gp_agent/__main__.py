@@ -10,6 +10,7 @@ from pathlib import Path
 
 import uvicorn
 
+from gp_agent.autostart import ensure_launch_agent
 from gp_agent.ffmpeg_cmd import pick_encoder
 from gp_agent.files import FileTickets
 from gp_agent.jobs import JobQueue
@@ -83,6 +84,13 @@ def main() -> int:
     if not _port_free(settings.port):
         log.error("Porta %d ocupada — o GamePulse Studio já está a correr?", settings.port)
         return 1
+
+    if getattr(sys, "frozen", False):
+        try:
+            if ensure_launch_agent(platform, home, Path(sys.executable)):
+                log.info("Arranque automático no login configurado")
+        except OSError:
+            log.warning("Não foi possível configurar o arranque no login", exc_info=True)
 
     server_box: list[uvicorn.Server] = []
     backend = None if env.get("GP_AGENT_NO_TRAY") == "1" else load_backend()

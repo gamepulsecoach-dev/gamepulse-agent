@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from gp_agent.ffmpeg_cmd import _SILENCE, AUDIO_RATE, Probe, _plan, _seconds, _trim, output_size
+from gp_agent.ffmpeg_cmd import _SILENCE, AUDIO_RATE, Probe, _plan, _seconds, _trim, output_size, video_codec_args
 
 # Re-encoding an already encoded clip: a bit more bitrate than a first cut
 EDIT_BITRATE = "8M"
@@ -207,7 +207,7 @@ def build_edit_args(
         "-f", "concat", "-safe", "0", "-i", str(overlay_list),
         *graph,
         "-map", "[ov]", "-map", "[ca]",
-        "-c:v", encoder, "-b:v", EDIT_BITRATE,
+        *video_codec_args(encoder, EDIT_BITRATE),
         "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "2",
         "-movflags", "+faststart",
         str(dst),

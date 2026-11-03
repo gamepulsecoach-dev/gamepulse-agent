@@ -1,8 +1,9 @@
+import plistlib
 from pathlib import Path
 
 import pytest
 
-from build_tools.build import APP_NAME, binary_names, pyinstaller_args
+from build_tools.build import APP_NAME, binary_names, patch_info_plist, pyinstaller_args
 
 
 class TestBinaryNames:
@@ -44,3 +45,20 @@ class TestPyinstallerArgs:
     def test_unsupported_platform(self, tmp_path):
         with pytest.raises(ValueError):
             pyinstaller_args(Path("e.py"), [], tmp_path, tmp_path, "linux")
+
+
+class TestPatchInfoPlist:
+    def make_app(self, tmp_path):
+        plist = tmp_path / "GamePulseStudio.app" / "Contents" / "Info.plist"
+        plist.parent.mkdir(parents=True)
+        plist.write_bytes(plistlib.dumps({"CFBundleIdentifier": "com.gamepulsecoach.agent", "CFBundleShortVersionString": "0.0.0"}))
+        return plist
+
+    def test_menu_bar_only_with_version_and_name(self, tmp_path):
+        plist = self.make_app(tmp_path)
+        patch_info_plist(tmp_path / "GamePulseStudio.app", "0.8.0")
+        info = plistlib.loads(plist.read_bytes())
+        assert info["LSUIElement"] is True  # tray app: no Dock icon
+        assert info["CFBundleShortVersionString"] == "0.8.0" and info["CFBundleVersion"] == "0.8.0"
+        assert info["CFBundleDisplayName"] == "GamePulse Studio"
+        assert info["CFBundleIdentifier"] == "com.gamepulsecoach.agent"  # untouched

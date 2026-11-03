@@ -5,6 +5,8 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Manual run: builds both installers as workflow artifacts, publishes nothing
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -48,23 +50,119 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart("v")
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DDistDir=..\dist\GamePulseStudio" installer\GamePulseStudio.iss
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/GamePulseStudio-Setup-*.exe
+
+  macos:
+    # Apple Silicon only (Intel Macs stopped shipping in 2020)
+    runs-on: macos-14
+    env:
+      FFMPEG_VERSION: "7.1.1"
+      DAV1D_VERSION: "1.5.1"
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller==6.22.3 pytest pytest-cov httpx meson ninja
+
+      # No ready-made LGPL ffmpeg with VideoToolbox for macOS: build one (cached per version).
+      # dav1d (BSD) decodes AV1, which YouTube often serves; linked statically so the app is self-contained.
+      - name: Cache ffmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-dav1d-${{ env.DAV1D_VERSION }}-arm64-12
+
+      - name: Build LGPL ffmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          brew install nasm pkg-config
+          PREFIX="$PWD/ffmpeg-deps"
+          curl -sSL "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz" | tar xz
+          (cd "dav1d-$DAV1D_VERSION" && meson setup build --prefix="$PREFIX" --libdir=lib --buildtype=release \
+              --default-library=static -Denable_tools=false -Denable_tests=false && ninja -C build install)
+          curl -sSL "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" | tar xJ
+          cd "ffmpeg-$FFMPEG_VERSION"
+          # No --enable-gpl / --enable-nonfree: stays LGPL. --disable-autodetect keeps Homebrew libs out of the binary.
+          PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" ./configure --prefix="$PWD/../ffmpeg-out" \
+              --disable-autodetect --enable-videotoolbox --enable-audiotoolbox --enable-zlib --enable-libdav1d \
+              --pkg-config-flags=--static --disable-doc --disable-ffplay --disable-ffprobe
+          make -j"$(sysctl -n hw.ncpu)" && make install
+
+      - name: Check ffmpeg
+        run: |
+          ff=ffmpeg-out/bin/ffmpeg
+          $ff -hide_banner -encoders | grep -q h264_videotoolbox || { echo "ffmpeg sem h264_videotoolbox"; exit 1; }
+          $ff -hide_banner -decoders | grep -q libdav1d || { echo "ffmpeg sem libdav1d"; exit 1; }
+          if $ff -hide_banner -buildconf | grep -q -- "--enable-gpl"; then echo "ffmpeg GPL"; exit 1; fi
+          # Only system libraries may be linked
+          if otool -L $ff | tail -n +2 | grep -v -e "^[[:space:]]*/usr/lib/" -e "^[[:space:]]*/System/"; then echo "ffmpeg liga bibliotecas externas"; exit 1; fi
+
+      - name: Fetch yt-dlp and deno
+        run: |
+          mkdir -p tools-bin
+          cp ffmpeg-out/bin/ffmpeg tools-bin/
+          curl -sSL -o tools-bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
+          curl -sSL -o deno.zip https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip
+          unzip -q deno.zip -d tools-bin
+          chmod +x tools-bin/*
+
+      - name: Unit + ffmpeg integration tests
+        run: PATH="$PWD/tools-bin:$PATH" python -m pytest -q
+
+      - name: Build GamePulse Studio
+        run: python -m build_tools.build --tools tools-bin --version "${GITHUB_REF_NAME#v}"
+
+      - name: Build disk image
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir dmg-root
+          cp -R dist/GamePulseStudio.app dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname "GamePulse Studio" -srcfolder dmg-root -ov -format UDZO "dist/GamePulseStudio-$version.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/GamePulseStudio-*.dmg
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Publish release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag.TrimStart("v")
-          $setup = "dist/GamePulseStudio-Setup-$version.exe"
-          $sha = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
-          @{
-            version = $version
-            windows = @{ url = "https://github.com/${{ github.repository }}/releases/download/$tag/GamePulseStudio-Setup-$version.exe"; sha256 = $sha }
-          } | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 dist/latest.json
-          # Stable-name copy: the web app links to releases/latest/download/GamePulseStudio-Setup.exe
-          Copy-Item $setup dist/GamePulseStudio-Setup.exe
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          base="https://github.com/$REPO/releases/download/$tag"
+          setup="dist/GamePulseStudio-Setup-$version.exe"
+          dmg="dist/GamePulseStudio-$version.dmg"
+          jq -n --arg v "$version" \
+            --arg wu "$base/GamePulseStudio-Setup-$version.exe" --arg ws "$(sha256sum "$setup" | cut -d' ' -f1)" \
+            --arg mu "$base/GamePulseStudio-$version.dmg" --arg ms "$(sha256sum "$dmg" | cut -d' ' -f1)" \
+            '{version: $v, windows: {url: $wu, sha256: $ws}, macos: {url: $mu, sha256: $ms}}' > dist/latest.json
+          # Stable names: the web app links to releases/latest/download/<name>
+          cp "$setup" dist/GamePulseStudio-Setup.exe
+          cp "$dmg" dist/GamePulseStudio.dmg
           # Legacy name (<= 0.6.x was "GamePulse Agent"): old cached web clients still link to it
-          Copy-Item $setup dist/GamePulseAgent-Setup.exe
-          gh release create $tag $setup dist/GamePulseStudio-Setup.exe dist/GamePulseAgent-Setup.exe dist/latest.json --title "GamePulse Studio $version" --generate-notes
-
-  # TODO(F5 macOS): needs an LGPL ffmpeg with h264_videotoolbox (no ready-made build like BtbN) + .app zip
+          cp "$setup" dist/GamePulseAgent-Setup.exe
+          gh release create "$tag" --repo "$REPO" --title "GamePulse Studio $version" --generate-notes \
+            "$setup" dist/GamePulseStudio-Setup.exe dist/GamePulseAgent-Setup.exe \
+            "$dmg" dist/GamePulseStudio.dmg dist/latest.json

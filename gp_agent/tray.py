@@ -31,11 +31,27 @@ def _user32():
     return ctypes.windll.user32  # type: ignore[attr-defined]
 
 
-def code_dialog(message: str, title: str, platform: str = sys.platform) -> None:
-    """Blocking always-on-top box with the code (Windows notifications can be silenced)."""
-    if platform != "win32":
-        return  # TODO(F5 macOS): osascript dialog
-    _user32().MessageBoxW(None, message, title, MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST)
+def _applescript_str(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def code_dialog(
+    message: str, title: str, platform: str = sys.platform, run: Callable[..., object] = subprocess.run
+) -> None:
+    """Blocking always-on-top box with the code (notifications can be silenced)."""
+    if platform == "win32":
+        _user32().MessageBoxW(None, message, title, MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST)
+        return
+    if platform != "darwin":
+        return
+    script = (
+        f"display dialog {_applescript_str(message)} with title {_applescript_str(title)} "
+        'buttons {"OK"} default button "OK" with icon note'
+    )
+    try:
+        run(["osascript", "-e", script], check=False)
+    except OSError:
+        log.warning("Janela do código (osascript) falhou", exc_info=True)
 
 
 def open_folder(path: Path, platform: str = sys.platform) -> None:

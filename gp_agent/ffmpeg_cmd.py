@@ -59,6 +59,14 @@ def pick_encoder(platform: str) -> str:
         raise ValueError(f"unsupported platform: {platform}") from None
 
 
+def video_codec_args(encoder: str, bitrate: str) -> list[str]:
+    args = ["-c:v", encoder, "-b:v", bitrate]
+    if encoder == "h264_videotoolbox":
+        # Software fallback when no hardware session is available (CI VMs, busy GPU)
+        args += ["-allow_sw", "1"]
+    return args
+
+
 def parse_probe(stderr: str) -> Probe:
     """Read `ffmpeg -i <file>` output (ffprobe is not shipped)."""
     video = _VIDEO.search(stderr)
@@ -174,7 +182,7 @@ def build_clip_args(
     return args + [
         "-filter_complex", _filter_graph(duration, probe, ordered),
         "-map", "[ov]", "-map", "[ca]",
-        "-c:v", encoder, "-b:v", VIDEO_BITRATE,
+        *video_codec_args(encoder, VIDEO_BITRATE),
         # Same audio format everywhere so clips can be joined with stream copy
         "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "2",
         "-movflags", "+faststart",
@@ -220,7 +228,7 @@ def build_concat_reencode_args(
     return args + [
         "-filter_complex", ";".join(graph),
         "-map", "[cv]", "-map", "[ca]",
-        "-c:v", encoder, "-b:v", VIDEO_BITRATE,
+        *video_codec_args(encoder, VIDEO_BITRATE),
         "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "2",
         "-movflags", "+faststart",
         str(dst),
