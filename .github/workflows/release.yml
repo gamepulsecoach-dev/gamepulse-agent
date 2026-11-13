@@ -57,7 +57,7 @@ jobs:
 
   macos:
     # Apple Silicon only (Intel Macs stopped shipping in 2020)
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       FFMPEG_VERSION: "7.1.1"
       DAV1D_VERSION: "1.5.1"
