@@ -216,12 +216,15 @@ def same_format(probes: Sequence[Probe]) -> bool:
 
 
 def build_concat_reencode_args(
-    ffmpeg: Path, parts: Sequence[Path], dst: Path, encoder: str, target: Probe
+    ffmpeg: Path, parts: Sequence[Path], dst: Path, encoder: str, target: Probe, progress: bool = False
 ) -> list[str]:
-    """Join clips from different videos (e.g. games at 60 and 29.97 fps) re-encoded to the first clip's format."""
+    """Join clips from different videos (e.g. games at 60 and 29.97 fps) re-encoded to the first clip's format.
+    With `progress` ffmpeg writes `-progress` lines on stdout (read by Runner._exec_progress)."""
     w, h = target.width, target.height
     fps = f"{target.fps if target.fps and target.fps > 0 else DEFAULT_JOIN_FPS:g}"
     args = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y"]
+    if progress:
+        args += ["-nostats", "-progress", "pipe:1"]
     graph, outputs = [], []
     for i, part in enumerate(parts):
         args += ["-i", str(part)]

@@ -286,3 +286,32 @@ class TestEdit:
         with pytest.raises(RunnerError, match="não foi possível executar"):
             self.runner(tmp_path, tools, boom).edit(
                 tmp_path / "clip.mp4", tmp_path / "o.mp4", tmp_path / "l.txt", self.CLIP, (), FakeCtx())
+
+
+class TestConcatProgress:
+    def mixed(self, src):
+        fps = "60 fps" if src.endswith("a.mp4") else "29.97 fps"
+        return PROBE_60.replace("60 fps", fps)
+
+    def test_reencode_reports_progress_over_total_duration(self, tmp_path, tools):
+        popen = FakePopen(lines=("out_time_us=5000000", "out_time_us=10000000", "progress=end"))
+        runner = Runner(tools, cache_dir=tmp_path / "cache", run=FakeRun(probe_stderr=self.mixed), popen=popen)
+        ctx = FakeCtx()
+        dst = tmp_path / "out" / "all.mp4"
+        runner.concat([tmp_path / "a.mp4", tmp_path / "b.mp4"], dst, ctx)
+        assert dst.read_bytes() == b"edited"
+        assert ctx.reports == [0.25, 0.5]  # two parts of 10 s each
+        assert "-progress" in popen.procs[0].args
+
+    def test_stream_copy_with_ctx_reports_done(self, make_runner, tmp_path):
+        ctx = FakeCtx()
+        make_runner(FakeRun()).concat([tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "o.mp4", ctx)
+        assert ctx.reports == [1.0]
+
+    def test_reencode_cancel_stops(self, tmp_path, tools):
+        popen = FakePopen(write_output=False)
+        runner = Runner(tools, cache_dir=tmp_path / "cache", run=FakeRun(probe_stderr=self.mixed), popen=popen)
+        dst = tmp_path / "o.mp4"
+        with pytest.raises(Cancelled):
+            runner.concat([tmp_path / "a.mp4", tmp_path / "b.mp4"], dst, FakeCtx(cancel_after=1))
+        assert not dst.exists()

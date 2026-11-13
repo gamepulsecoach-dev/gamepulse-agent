@@ -249,3 +249,15 @@ class TestConcatMixedFormats:
         assert "fps=29.97" in graph
         unknown = Probe(1920, 1080, True, 10_000, fps=None)
         assert "fps=25" in arg(build_concat_reencode_args(FF, [SRC, SRC], DST, "h264_mf", unknown), "-filter_complex")
+
+
+class TestConcatReencodeProgress:
+    P = Probe(1920, 1080, True, 3_000, fps=60.0)
+
+    def test_progress_flags_only_when_asked(self):
+        plain = build_concat_reencode_args(FF, [SRC, SRC], DST, "h264_mf", self.P)
+        assert "-progress" not in plain
+        args = build_concat_reencode_args(FF, [SRC, SRC], DST, "h264_mf", self.P, progress=True)
+        assert arg(args, "-progress") == "pipe:1"
+        assert "-nostats" in args
+        assert args[-1] == str(DST)

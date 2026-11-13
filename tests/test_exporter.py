@@ -15,7 +15,7 @@ from gp_agent.exporter import (
     export_clip,
     export_compilation,
 )
-from gp_agent.runner import Runner
+from gp_agent.runner import Cancelled, Runner
 
 YT = "https://www.youtube.com/watch?v=abc123"
 
@@ -116,6 +116,36 @@ class TestExportCompilation:
         with pytest.raises(ValueError):
             export_compilation(bad, make_runner(run), tmp_path)
         assert run.calls == []
+
+
+class TestCompilationProgress:
+    def test_reports_rising_fractions_ending_at_one(self, make_runner, tmp_path):
+        ctx = FakeCtx()
+        clips = (req(timestamp_ms=10_000), req(timestamp_ms=20_000), req(timestamp_ms=30_000))
+        export(CompileRequest("J", "T", clips), make_runner(FakeRun()), tmp_path, ctx)
+        assert ctx.reports == sorted(ctx.reports)
+        assert ctx.reports[-1] == pytest.approx(1.0)
+        assert 0 < ctx.reports[0] < 0.2  # download step comes first
+        assert len(ctx.reports) == 1 + 3 + 1  # 1 video, 3 cuts, join
+
+    def test_cut_step_covers_most_of_the_bar(self, make_runner, tmp_path):
+        ctx = FakeCtx()
+        export_compilation(CompileRequest("J", "T", (req(timestamp_ms=10_000), req(timestamp_ms=20_000))),
+                           make_runner(FakeRun()), tmp_path, ctx)
+        assert ctx.reports[1] == pytest.approx(0.15 + 0.6 / 2)
+        assert ctx.reports[2] == pytest.approx(0.75)
+
+    def test_cancel_between_clips_stops_before_joining(self, make_runner, tmp_path):
+        run = FakeRun()
+        clips = (req(timestamp_ms=10_000), req(timestamp_ms=20_000), req(timestamp_ms=30_000))
+        with pytest.raises(Cancelled):
+            export_compilation(CompileRequest("J", "T", clips), make_runner(run), tmp_path, FakeCtx(cancel_after=2))
+        assert run.tool_calls("concat") == []
+        assert not (tmp_path / "J" / "J_Compilado_T.mp4").exists()
+
+    def test_without_ctx_still_works(self, make_runner, tmp_path):
+        out = export_compilation(CompileRequest("J", "T", (req(timestamp_ms=10_000),)), make_runner(FakeRun()), tmp_path)
+        assert out.exists()
 
 
 def test_export_dispatches_by_type(make_runner, tmp_path):

@@ -163,3 +163,17 @@ def test_compilation_of_games_with_different_fps_has_no_frozen_gap(runner, media
                          capture_output=True, text=True)
     frames = int(re.findall(r"frame=\s*(\d+)", out.stderr)[-1])
     assert frames == pytest.approx(6 * 60, abs=6)  # real pictures for the whole duration
+
+
+def test_mixed_fps_join_reports_real_progress(runner, media, tmp_path):
+    from test_runner import FakeCtx
+
+    fast, slow = tmp_path / "fast.mp4", tmp_path / "slow.mp4"
+    runner.cut(media / "fast.mp4", fast, 1_000, 4_000, runner.probe(media / "fast.mp4"))
+    runner.cut(media / "sound.mp4", slow, 1_000, 4_000, runner.probe(media / "sound.mp4"))
+    ctx = FakeCtx()
+    joined = tmp_path / "out" / "mixed.mp4"
+    runner.concat([fast, slow], joined, ctx)
+    assert runner.probe(joined).duration_ms == pytest.approx(6_000, abs=200)
+    assert ctx.reports and ctx.reports == sorted(ctx.reports)
+    assert ctx.reports[-1] > 0.9

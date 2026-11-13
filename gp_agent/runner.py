@@ -219,18 +219,15 @@ class Runner:
             execute=lambda args: self._exec_progress(args, CUT_TIMEOUT_S, "Exportação do clip editado", total_ms, ctx),
         )
 
-    def concat(self, parts: Sequence[Path], dst: Path) -> None:
+    def concat(self, parts: Sequence[Path], dst: Path, ctx: Progress | None = None) -> None:
+        """Joins the parts; with `ctx` it reports progress (re-encode) or 1.0 at the end (stream copy)."""
         if not parts:
             raise ValueError("nothing to join")
         dst.parent.mkdir(parents=True, exist_ok=True)
         if len(parts) > 1:
             probes = [self.probe(p) for p in parts]
             if not same_format(probes):
-                self._write_atomically(
-                    dst,
-                    lambda tmp: build_concat_reencode_args(self.tools.ffmpeg, parts, tmp, self.tools.encoder, probes[0]),
-                    CUT_TIMEOUT_S * len(parts), "Compilação",
-                )
+                self._reencode_join(parts, dst, probes, ctx)
                 return
         list_file = dst.with_name(f"{dst.stem}.list.txt")
         list_file.write_text(concat_list_text(parts), encoding="utf-8")
@@ -240,6 +237,24 @@ class Runner:
             )
         finally:
             list_file.unlink(missing_ok=True)
+        if ctx is not None:
+            ctx.report(1.0)  # stream copy takes seconds: nothing to measure
+
+    def _reencode_join(self, parts: Sequence[Path], dst: Path, probes: Sequence[Probe], ctx: Progress | None) -> None:
+        timeout = CUT_TIMEOUT_S * len(parts)
+        execute = None
+        if ctx is not None:
+            total_ms = sum(p.duration_ms or 0 for p in probes)
+
+            def execute(args: list[str]) -> None:
+                self._exec_progress(args, timeout, "Compilação", total_ms, ctx)
+
+        self._write_atomically(
+            dst,
+            lambda tmp: build_concat_reencode_args(
+                self.tools.ffmpeg, parts, tmp, self.tools.encoder, probes[0], progress=ctx is not None),
+            timeout, "Compilação", execute=execute,
+        )
 
     def evict(self, in_use: frozenset[Path] = frozenset()) -> tuple[Path, ...]:
         if not self.cache_dir.is_dir():
