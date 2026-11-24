@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gp_agent import __version__
 from gp_agent.edit_cmd import Loupe, OverlaySegment, Pause, Rect, ZoomCrop
-from gp_agent.exporter import ClipRequest, CompileRequest, EditRequest, Overlay
+from gp_agent.exporter import ClipRequest, CompileRequest, Cover, EditRequest, Overlay
 from gp_agent.ffmpeg_cmd import Probe
 from gp_agent.files import FileTickets, resolve_export_file
 from gp_agent.jobs import JobQueue
@@ -33,6 +33,10 @@ MAX_URL = 2048
 MAX_OVERLAYS = 5
 MAX_CLIPS = 100
 MAX_PNG_B64 = 12_000_000
+# Dossier title cards: one at the start + one per category
+MAX_COVERS = 50
+COVER_MIN_MS = 1_000
+COVER_MAX_MS = 10_000
 MAX_BODY_BYTES = 64 * 1024 * 1024
 # Telestrator edit (same limits as the site's edit-timeline.js / edit-export.js)
 PAUSE_MIN_MS = 500
@@ -83,11 +87,18 @@ class ClipIn(ClipPartIn):
     folder: str = Field(default="", max_length=MAX_TEXT)
 
 
+class CoverIn(_CamelModel):
+    before: int = Field(ge=0, lt=MAX_CLIPS)  # index of the clip the title card goes in front of
+    png: str = Field(min_length=1, max_length=MAX_PNG_B64)
+    duration_ms: int = Field(alias="durationMs", ge=COVER_MIN_MS, le=COVER_MAX_MS)
+
+
 class CompileIn(_CamelModel):
     team: str = Field(default="", max_length=MAX_TEXT)
     game: str = Field(max_length=MAX_TEXT)
     title: str = Field(max_length=MAX_TEXT)
     clips: list[ClipPartIn] = Field(min_length=1, max_length=MAX_CLIPS)
+    covers: list[CoverIn] = Field(default_factory=list, max_length=MAX_COVERS)
 
 
 class PauseIn(_CamelModel):
@@ -217,6 +228,12 @@ def _to_request(
     )
 
 
+def _covers(items: list[CoverIn], clip_count: int) -> tuple[Cover, ...]:
+    if any(c.before >= clip_count for c in items):
+        raise BadInput("Capa fora dos clips")
+    return tuple(Cover(before=c.before, png=_decode_png(c.png), duration_ms=c.duration_ms) for c in items)
+
+
 def _cors_headers(origin: str) -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": origin,
@@ -325,7 +342,8 @@ def create_app(
     @app.post("/compile", status_code=202, dependencies=[Depends(require_token)])
     def compile_clips(body: CompileIn) -> JSONResponse:
         clips = tuple(_to_request(part, body.game, body.title, i, body.team) for i, part in enumerate(body.clips, start=1))
-        job = queue.submit(CompileRequest(game=body.game, title=body.title, clips=clips, team=body.team))
+        covers = _covers(body.covers, len(clips))
+        job = queue.submit(CompileRequest(game=body.game, title=body.title, clips=clips, team=body.team, covers=covers))
         return JSONResponse({"jobId": job.id}, status_code=202)
 
     @app.get("/jobs/{job_id}", dependencies=[Depends(require_token)])

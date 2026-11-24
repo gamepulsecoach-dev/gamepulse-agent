@@ -246,6 +246,36 @@ def build_concat_reencode_args(
     ]
 
 
+COVER_FADE_MS = 300
+
+
+def build_cover_args(
+    ffmpeg: Path, png: Path, dst: Path, duration_ms: int, encoder: str, target: Probe
+) -> list[str]:
+    """Title card: the png held for `duration_ms` at the clip's size and frame rate, faded in/out, with silence."""
+    if duration_ms <= 2 * COVER_FADE_MS:
+        raise ValueError("cover too short for its fades")
+    w, h = target.width, target.height
+    fps = f"{target.fps if target.fps and target.fps > 0 else DEFAULT_JOIN_FPS:g}"
+    secs, fade = _seconds(duration_ms), _seconds(COVER_FADE_MS)
+    graph = (
+        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        f"setsar=1,fade=t=in:st=0:d={fade},fade=t=out:st={_seconds(duration_ms - COVER_FADE_MS)}:d={fade},"
+        f"format=yuv420p[ov]"
+    )
+    return [
+        str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
+        "-loop", "1", "-framerate", fps, "-t", secs, "-i", str(png),
+        "-f", "lavfi", "-t", secs, "-i", _SILENCE,
+        "-filter_complex", graph,
+        "-map", "[ov]", "-map", "1:a",
+        *video_codec_args(encoder, VIDEO_BITRATE),
+        "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "2",
+        "-movflags", "+faststart",
+        str(dst),
+    ]
+
+
 def build_concat_args(ffmpeg: Path, list_file: Path, dst: Path) -> list[str]:
     return [
         str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",

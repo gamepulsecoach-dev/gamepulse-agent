@@ -27,6 +27,7 @@ from gp_agent.ffmpeg_cmd import (
     Probe,
     build_clip_args,
     build_concat_args,
+    build_cover_args,
     build_concat_reencode_args,
     concat_list_text,
     same_format,
@@ -219,14 +220,23 @@ class Runner:
             execute=lambda args: self._exec_progress(args, CUT_TIMEOUT_S, "Exportação do clip editado", total_ms, ctx),
         )
 
-    def concat(self, parts: Sequence[Path], dst: Path, ctx: Progress | None = None) -> None:
-        """Joins the parts; with `ctx` it reports progress (re-encode) or 1.0 at the end (stream copy)."""
+    def cover(self, png: Path, dst: Path, duration_ms: int, target: Probe) -> None:
+        """Title card video at the `target` clip's size and frame rate."""
+        self._write_atomically(
+            dst,
+            lambda tmp: build_cover_args(self.tools.ffmpeg, png, tmp, duration_ms, self.tools.encoder, target),
+            CUT_TIMEOUT_S, "Criação da capa",
+        )
+
+    def concat(self, parts: Sequence[Path], dst: Path, ctx: Progress | None = None, reencode: bool = False) -> None:
+        """Joins the parts; with `ctx` it reports progress (re-encode) or 1.0 at the end (stream copy).
+        `reencode` skips stream copy (title cards are encoded apart from the clips)."""
         if not parts:
             raise ValueError("nothing to join")
         dst.parent.mkdir(parents=True, exist_ok=True)
         if len(parts) > 1:
             probes = [self.probe(p) for p in parts]
-            if not same_format(probes):
+            if reencode or not same_format(probes):
                 self._reencode_join(parts, dst, probes, ctx)
                 return
         list_file = dst.with_name(f"{dst.stem}.list.txt")

@@ -165,6 +165,21 @@ def test_compilation_of_games_with_different_fps_has_no_frozen_gap(runner, media
     assert frames == pytest.approx(6 * 60, abs=6)  # real pictures for the whole duration
 
 
+def test_cover_card_joins_with_clip_at_its_format(runner, media, tmp_path):
+    clip = tmp_path / "clip.mp4"
+    runner.cut(media / "fast.mp4", clip, 1_000, 4_000, runner.probe(media / "fast.mp4"))
+    target = runner.probe(clip)
+    card = tmp_path / "card.mp4"
+    runner.cover(media / "draw.png", card, 2_500, target)
+    got_card = runner.probe(card)
+    assert (got_card.width, got_card.height, got_card.fps) == (target.width, target.height, target.fps)
+    assert got_card.has_audio is True
+    assert got_card.duration_ms == pytest.approx(2_500, abs=100)
+    joined = tmp_path / "out" / "with-card.mp4"
+    runner.concat([card, clip], joined, reencode=True)
+    assert runner.probe(joined).duration_ms == pytest.approx(5_500, abs=200)
+
+
 def test_mixed_fps_join_reports_real_progress(runner, media, tmp_path):
     from test_runner import FakeCtx
 

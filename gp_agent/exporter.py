@@ -33,11 +33,19 @@ class ClipRequest:
 
 
 @dataclass(frozen=True)
+class Cover:
+    before: int  # index of the clip the title card goes in front of
+    png: bytes
+    duration_ms: int
+
+
+@dataclass(frozen=True)
 class CompileRequest:
     game: str
     title: str
     clips: tuple[ClipRequest, ...]
     team: str = ""
+    covers: tuple[Cover, ...] = ()  # in play order; several may share the same `before`
 
 
 @dataclass(frozen=True)
@@ -127,14 +135,41 @@ def _download_sources(req: CompileRequest, runner: Runner, ctx: Progress) -> dic
     return sources
 
 
+def interleave(parts: list[Path], covers: list[tuple[int, Path]]) -> list[Path]:
+    """Puts each (before, card) in front of clip `before`; cards sharing a clip keep their given order."""
+    if any(not 0 <= before < len(parts) for before, _ in covers):
+        raise ValueError("cover outside the clips")
+    ordered = sorted(covers, key=lambda c: c[0])  # stable
+    out: list[Path] = []
+    for i, part in enumerate(parts):
+        out += [card for before, card in ordered if before == i]
+        out.append(part)
+    return out
+
+
+def _render_covers(req: CompileRequest, runner: Runner, parts: list[Path], workdir: Path) -> list[Path]:
+    target = runner.probe(parts[0])  # cut clips are already at the output size
+    cards = []
+    for i, cover in enumerate(req.covers):
+        png = workdir / f"cover_{i:03d}.png"
+        png.write_bytes(cover.png)
+        card = workdir / f"cover_{i:03d}.mp4"
+        runner.cover(png, card, cover.duration_ms, target)
+        cards.append((cover.before, card))
+    return interleave(parts, cards)
+
+
 def export_compilation(
     req: CompileRequest, runner: Runner, export_dir: Path, ctx: Progress | None = None
 ) -> Path:
-    """Downloads, cuts each clip and joins them, reporting 0..1 on `ctx` and stopping on cancel."""
+    """Downloads, cuts each clip, adds the title cards and joins them, reporting 0..1 on `ctx` and stopping on cancel."""
     if not req.clips:
         raise ValueError("compilation without clips")
     for clip in req.clips:
         _validate(clip)
+    for cover in req.covers:
+        png_size(cover.png)
+    interleave([Path()] * len(req.clips), [(c.before, Path()) for c in req.covers])  # positions valid
     ctx = ctx or _NoProgress()
     dst = compilation_path(export_dir, req.game, req.title, req.team)
     sources = _download_sources(req, runner, ctx)
@@ -151,7 +186,10 @@ def export_compilation(
             parts.append(part)
             ctx.report(COMPILE_DOWNLOAD_SHARE + COMPILE_CUT_SHARE * (i + 1) / len(req.clips))
         _check_cancel(ctx)
-        runner.concat(parts, dst, _Span(ctx, COMPILE_DOWNLOAD_SHARE + COMPILE_CUT_SHARE, COMPILE_JOIN_SHARE))
+        if req.covers:
+            parts = _render_covers(req, runner, parts, workdir)
+        runner.concat(parts, dst, _Span(ctx, COMPILE_DOWNLOAD_SHARE + COMPILE_CUT_SHARE, COMPILE_JOIN_SHARE),
+                      reencode=bool(req.covers))
     return dst
 
 
