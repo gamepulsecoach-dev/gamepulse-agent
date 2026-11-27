@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -72,7 +73,8 @@ def cache_key(url: str) -> str:
 
 def build_download_args(ytdlp: Path, ffmpeg: Path, url: str, dst_stem: Path, deno: Path | None = None) -> list[str]:
     # YouTube extraction needs a JS runtime; the bundled deno is not on PATH, so name it explicitly
-    js_runtime = ["--js-runtimes", f"deno:{deno}"] if deno else []
+    # The bundled challenge solver goes stale when YouTube changes its player: fetch the current one
+    js_runtime = ["--js-runtimes", f"deno:{deno}", "--remote-components", "ejs:github"] if deno else []
     return [
         str(ytdlp),
         "--no-playlist",
@@ -92,6 +94,22 @@ Run = Callable[..., subprocess.CompletedProcess]
 Popen = Callable[..., subprocess.Popen]
 
 
+_YOUTUBE_BLOCK_MARKERS = ("This video is not available", "wiki/EJS", "challenge solving failed", "Sign in to confirm")
+
+
+def download_error_message(stderr_tail: str) -> str:
+    """User-facing text for a failed yt-dlp download."""
+    tail = stderr_tail.strip()
+    if not tail:
+        return "Download do vídeo falhou"
+    if any(m in tail for m in _YOUTUBE_BLOCK_MARKERS):
+        errors = [ln for ln in tail.splitlines() if ln.startswith("ERROR:")]
+        detail = f" ({errors[-1]})" if errors else ""
+        return ("O YouTube recusou o download. Se o vídeo é público, feche e volte a abrir o GamePulse Studio "
+                "(actualiza o componente de download) e tente de novo." + detail)
+    return f"Download do vídeo falhou: {tail}"
+
+
 def _part_path(dst: Path) -> Path:
     return dst.with_name(f"{dst.stem}.part{dst.suffix}")
 
@@ -104,8 +122,10 @@ class Runner:
         run: Run = subprocess.run,
         clock: Callable[[], float] = time.time,
         popen: Popen = subprocess.Popen,
+        tool_lock: threading.Lock | None = None,
     ):
         self.tools = tools
+        self._tool_lock = tool_lock or threading.Lock()  # shared with the yt-dlp updater
         self.cache_dir = cache_dir
         self._run = run
         self._clock = clock
@@ -176,8 +196,11 @@ class Runner:
         path = stem.with_suffix(".mp4")
         if not path.is_file():
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self._exec(build_download_args(self.tools.ytdlp, self.tools.ffmpeg, url, stem, self.tools.deno),
-                       DOWNLOAD_TIMEOUT_S, "Download do vídeo")
+            args = build_download_args(self.tools.ytdlp, self.tools.ffmpeg, url, stem, self.tools.deno)
+            with self._tool_lock:
+                result = self._call(args, DOWNLOAD_TIMEOUT_S, "Download do vídeo")
+            if result.returncode != 0:
+                raise RunnerError(download_error_message((result.stderr or "")[-STDERR_TAIL:]))
             if not path.is_file():
                 raise RunnerError("Download do vídeo terminou sem ficheiro mp4")
         now = self._clock()

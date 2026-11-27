@@ -20,6 +20,7 @@ from gp_agent.exporter import export
 from gp_agent.runner import Runner, Tools
 from gp_agent.server import DEFAULT_PORT, Settings, create_app
 from gp_agent.tray import Tray, load_backend
+from gp_agent.ytdlp_update import YtDlpManager
 
 log = logging.getLogger("gp_agent")
 
@@ -72,6 +73,8 @@ def main() -> int:
     if ytdlp is None or ffmpeg is None:
         log.error("yt-dlp ou ffmpeg não encontrados (definir GP_YT_DLP / GP_FFMPEG)")
         return 1
+    ytdlp_mgr = YtDlpManager(ytdlp, conf_dir / "bin")
+    ytdlp = ytdlp_mgr.prepare()
     deno = find_tool("deno", env, _bundle_dir())
     if deno is None:
         log.warning("deno não encontrado (GP_DENO) — downloads do YouTube podem falhar")
@@ -96,7 +99,9 @@ def main() -> int:
     backend = None if env.get("GP_AGENT_NO_TRAY") == "1" else load_backend()
     tray = Tray(backend, settings.export_dir, on_quit=lambda: _stop(server_box)) if backend else None
 
-    runner = Runner(Tools(ytdlp=ytdlp, ffmpeg=ffmpeg, encoder=pick_encoder(platform), deno=deno), cache_dir(platform, home, env))
+    runner = Runner(Tools(ytdlp=ytdlp, ffmpeg=ffmpeg, encoder=pick_encoder(platform), deno=deno), cache_dir(platform, home, env),
+                    tool_lock=ytdlp_mgr.lock)
+    ytdlp_mgr.start_background(threading.Event())
     app = create_app(
         settings,
         queue=JobQueue(lambda req, ctx: export(req, runner, settings.export_dir, ctx)),
